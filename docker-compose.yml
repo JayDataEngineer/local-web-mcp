@@ -187,7 +187,7 @@ services:
     privileged: true
     network_mode: host
     environment:
-      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_ARGS=--port=41641
     volumes:

@@ -2,7 +2,7 @@
 
 import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
@@ -106,7 +106,10 @@ async def search(
 
 
 @app.post("/scrape")
-async def scrape(request: ScrapeRequest):
+async def scrape(
+    scrape_request: ScrapeRequest,
+    http_request: Request  # FastAPI Request for query params
+):
     """
     Scrape a URL with automatic routing
 
@@ -129,7 +132,7 @@ async def scrape(request: ScrapeRequest):
     from .models.unified import ScrapeResponse
 
     # Check if client wants async mode (explicit or default with Celery)
-    wait = request.query_params.get("wait", "false").lower() == "true"
+    wait = http_request.query_params.get("wait", "false").lower() == "true"
 
     if CELERY_AVAILABLE and not wait:
         # Async mode - return task_id immediately
@@ -137,10 +140,10 @@ async def scrape(request: ScrapeRequest):
             from .celery_app import app as celery_app
             task = celery_app.send_task(
                 'scrape_task',
-                args=[request.url],
+                args=[scrape_request.url],
                 kwargs={
-                    'force_method': request.force_method.value if request.force_method else None,
-                    'css_selector': request.css_selector
+                    'force_method': scrape_request.force_method.value if scrape_request.force_method else None,
+                    'css_selector': scrape_request.css_selector
                 }
             )
             return {
@@ -149,7 +152,7 @@ async def scrape(request: ScrapeRequest):
                 "message": "Task queued. Poll /status/" + task.id + " for result."
             }
         except Exception as e:
-            logger.error(f"Celery task creation failed for {request.url}: {e}")
+            logger.error(f"Celery task creation failed for {scrape_request.url}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
     # Blocking mode (wait=true or no Celery)
@@ -158,23 +161,23 @@ async def scrape(request: ScrapeRequest):
             from .celery_app import app as celery_app
             task = celery_app.send_task(
                 'scrape_task',
-                args=[request.url],
+                args=[scrape_request.url],
                 kwargs={
-                    'force_method': request.force_method.value if request.force_method else None,
-                    'css_selector': request.css_selector
+                    'force_method': scrape_request.force_method.value if scrape_request.force_method else None,
+                    'css_selector': scrape_request.css_selector
                 }
             )
             # Block until result is ready
             result_dict = task.get(timeout=300)
             return ScrapeResponse(**result_dict)
         except Exception as e:
-            logger.error(f"Celery scrape failed for {request.url}: {e}")
+            logger.error(f"Celery scrape failed for {scrape_request.url}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     else:
         # Direct scraping
         scrape_svc = get_scrape_service()
         try:
-            result = await scrape_svc.scrape(request)
+            result = await scrape_svc.scrape(scrape_request)
             return result
         except Exception as e:
             logger.error(f"Scrape failed for {request.url}: {e}")
