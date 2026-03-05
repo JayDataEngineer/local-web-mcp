@@ -1,0 +1,45 @@
+use_default_settings: true
+
+server:
+  secret_key: "0dc1e39350dd14a5e8c45d45e2789b194f4de0bc175c62d7bd0c5f3c0ae587a0"
+  limiter: false
+  port: 8080
+  bind_address: "0.0.0.0"
+  reverse_proxy: true
+
+redis:
+  url: redis://127.0.0.1/6380/0
+
+botdetection:
+  ip_limit: false
+  link_token: false
+
+search:
+  formats:
+    - html
+    - json
+    - csv
+    - rss
+  timeout: 8.0
+  max_results: 100
+
+engines:
+  - name: brave
+    disabled: false
+    timeout: 8.0
+  
+  - name: duckduckgo
+    disabled: false
+    timeout: 10.0
+  
+  - name: google
+    disabled: false
+    timeout: 8.0
+  
+  - name: bing
+    disabled: false
+    timeout: 8.0
+
+outgoing:
+  request_timeout: 15.0
+  max_request_timeout: 20.0
