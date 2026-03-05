@@ -92,6 +92,10 @@ class UnifiedScrapeService:
         rate_limiter = get_rate_limit_service()
 
         try:
+            # Initialize rate limiter if needed
+            if rate_limiter._redis is None:
+                await rate_limiter._get_redis()
+
             acquired = await rate_limiter.acquire(domain)
             if not acquired:
                 return ScrapeResponse(
@@ -108,7 +112,8 @@ class UnifiedScrapeService:
                     url=request.url,
                     cleaner=self.cleaner,
                     db=db,
-                    force_method=request.force_method.value if request.force_method else None
+                    force_method=request.force_method.value if request.force_method else None,
+                    css_selector=request.css_selector
                 )
 
                 # Convert dict to ScrapeResponse
@@ -125,13 +130,14 @@ class UnifiedScrapeService:
                 await rate_limiter.release(domain)
 
         except Exception as e:
-            logger.error(f"Rate limiter error for {domain}: {e}")
+            logger.warning(f"Rate limiter error for {domain}: {e} - proceeding without rate limiting")
             # Fall through to scraping without rate limiting on error
             result_dict = await scrape_with_fallback(
                 url=request.url,
                 cleaner=self.cleaner,
                 db=db,
-                force_method=request.force_method.value if request.force_method else None
+                force_method=request.force_method.value if request.force_method else None,
+                css_selector=request.css_selector
             )
 
             response = self._dict_to_response(result_dict)

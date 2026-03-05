@@ -105,7 +105,7 @@ async def search(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/scrape", response_model=ScrapeResponse)
+@app.post("/scrape")
 async def scrape(request: ScrapeRequest):
     """
     Scrape a URL with automatic routing
@@ -121,39 +121,57 @@ async def scrape(request: ScrapeRequest):
     - Reddit → Reddit API → JSON → Markdown
 
     Returns:
-    Unified ScrapeResponse with content and optional AI summary
+    - With Celery: {"task_id": "...", "status": "pending"} - poll /status/{task_id} for result
+    - Without Celery: Direct ScrapeResponse
 
-    To enable AI summary, set include_summary=true in the request.
-
-    Note: When Celery is available, the task is queued to a worker
-    with controlled concurrency (max 10 browsers). The endpoint waits
-    for the result to maintain MCP compatibility.
+    For async/polling mode, use wait=false query param to always get task_id.
     """
-    # Use Celery if available for concurrency control
-    if CELERY_AVAILABLE:
+    from .models.unified import ScrapeResponse
+
+    # Check if client wants async mode (explicit or default with Celery)
+    wait = request.query_params.get("wait", "false").lower() == "true"
+
+    if CELERY_AVAILABLE and not wait:
+        # Async mode - return task_id immediately
         try:
             from .celery_app import app as celery_app
-            # Send task to Celery by name
             task = celery_app.send_task(
                 'scrape_task',
                 args=[request.url],
                 kwargs={
-                    'force_method': request.force_method.value if request.force_method else None
+                    'force_method': request.force_method.value if request.force_method else None,
+                    'css_selector': request.css_selector
                 }
             )
+            return {
+                "task_id": task.id,
+                "status": "pending",
+                "message": "Task queued. Poll /status/" + task.id + " for result."
+            }
+        except Exception as e:
+            logger.error(f"Celery task creation failed for {request.url}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
-            # Block until result is ready (keeps MCP contract)
-            # Timeout after 5 minutes
+    # Blocking mode (wait=true or no Celery)
+    if CELERY_AVAILABLE:
+        try:
+            from .celery_app import app as celery_app
+            task = celery_app.send_task(
+                'scrape_task',
+                args=[request.url],
+                kwargs={
+                    'force_method': request.force_method.value if request.force_method else None,
+                    'css_selector': request.css_selector
+                }
+            )
+            # Block until result is ready
             result_dict = task.get(timeout=300)
-
-            # Convert dict back to ScrapeResponse
             return ScrapeResponse(**result_dict)
-
         except Exception as e:
             logger.error(f"Celery scrape failed for {request.url}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     else:
-        # Fallback to direct scraping (no concurrency control)
+        # Direct scraping
         scrape_svc = get_scrape_service()
         try:
             result = await scrape_svc.scrape(request)
@@ -161,6 +179,37 @@ async def scrape(request: ScrapeRequest):
         except Exception as e:
             logger.error(f"Scrape failed for {request.url}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/status/{task_id}")
+async def get_task_status(task_id: str):
+    """
+    Check status of an async scrape task
+
+    Returns task status and result if ready.
+    Use with /scrape endpoint in async mode.
+    """
+    if not CELERY_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Celery not available")
+
+    try:
+        from celery.result import AsyncResult
+        from .celery_app import app as celery_app
+
+        task = AsyncResult(task_id, app=celery_app)
+
+        if task.state == 'PENDING':
+            return {"task_id": task_id, "status": "pending", "ready": False}
+        elif task.state == 'PROGRESS':
+            return {"task_id": task_id, "status": "progress", "ready": False, "info": task.info}
+        elif task.state == 'SUCCESS':
+            return {"task_id": task_id, "status": "complete", "ready": True, "result": task.result}
+        else:  # FAILURE
+            return {"task_id": task_id, "status": "failed", "ready": True, "error": str(task.info)}
+
+    except Exception as e:
+        logger.error(f"Status check failed for {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/clean")

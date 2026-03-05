@@ -36,6 +36,7 @@ class CombinedSearchResponse(BaseModel):
 class ScrapeRequest(BaseModel):
     url: str
     force_method: Optional[ScrapingMethod] = None
+    css_selector: Optional[str] = Field(None, description="CSS selector for targeted content extraction")
 
 
 class ScrapeResponse(BaseModel):

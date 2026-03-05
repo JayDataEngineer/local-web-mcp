@@ -14,6 +14,7 @@ class ScrapeTask(Task):
     """Custom Task class with lazy initialization of heavy resources"""
 
     _db = None
+    _db_initialized = False
     _cleaner = None
     _cache = None
     _cache_loop = None
@@ -23,6 +24,10 @@ class ScrapeTask(Task):
         """Lazy init database connection"""
         if self._db is None:
             self._db = Database()
+            # Initialize the async database connection
+            if not self._db_initialized:
+                self._run_async(self._db.init())
+                self._db_initialized = True
         return self._db
 
     @property
@@ -46,13 +51,8 @@ class ScrapeTask(Task):
         if self._cache is None:
             try:
                 from ..services.cache_service import get_cache_service
-                self._cache = get_cache_service()
-                # Initialize Redis connection
-                try:
-                    self._run_async(self._cache._get_redis())
-                except Exception as e:
-                    # Cache not available, that's okay
-                    self._cache = None
+                # Properly await the async singleton factory
+                self._cache = self._run_async(get_cache_service())
             except Exception as e:
                 # Cache service not available
                 self._cache = None
@@ -68,20 +68,27 @@ class ScrapeTask(Task):
 def scrape_task(
     self,
     url: str,
-    force_method: str | None = None
+    force_method: str | None = None,
+    css_selector: str | None = None
 ) -> dict:
     """
     Scrape a URL with automatic method routing and caching
 
     This runs in the Celery worker with controlled concurrency.
     Returns dict that can be serialized to JSON for Redis.
+
+    Args:
+        url: URL to scrape
+        force_method: Force specific scraping method
+        css_selector: Optional CSS selector for targeted content extraction
     """
     # Check cache first
     if self.cache is not None:
         try:
             cached_result = self._run_async(self.cache.get_scrape(url))
             if cached_result:
-                # Return cached result immediately
+                # Mark as cached and return immediately
+                cached_result["cached"] = True
                 return cached_result
         except Exception as e:
             # Cache miss or error, continue with scraping
@@ -93,7 +100,8 @@ def scrape_task(
             url=url,
             cleaner=self.cleaner,
             db=self.db,
-            force_method=force_method
+            force_method=force_method,
+            css_selector=css_selector
         )
     )
 
@@ -104,4 +112,6 @@ def scrape_task(
         except Exception:
             pass  # Cache set failed, but scrape succeeded
 
+    # Mark as not cached (fresh scrape)
+    result["cached"] = False
     return result

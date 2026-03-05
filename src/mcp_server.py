@@ -88,7 +88,8 @@ async def list_tools() -> list[Tool]:
             description="Scrape a URL and extract clean markdown content. "
             "Automatically tries Crawl4AI first (fast), falls back to Selenium (stealth), "
             "and uses Reddit JSON API for Reddit URLs. "
-            "Learns which method works best per domain. Blacklists after 3 failures.",
+            "Learns which method works best per domain. Blacklists after 3 failures. "
+            "Optionally use CSS selector for targeted content extraction.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -100,6 +101,11 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Force specific scraping method (crawl4ai, selenium, reddit_api)",
                         "enum": ["crawl4ai", "selenium", "reddit_api"],
+                        "default": None
+                    },
+                    "css_selector": {
+                        "type": "string",
+                        "description": "CSS selector for targeted content extraction (e.g., 'article.main', '#content', '.post-body')",
                         "default": None
                     }
                 },
@@ -169,12 +175,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     elif name == "scrape_url":
         url = arguments.get("url")
         method = arguments.get("method")
+        css_selector = arguments.get("css_selector")
 
         # Create scrape request
         from .models.unified import ScrapeRequest, ScrapingMethod
         request = ScrapeRequest(
             url=url,
-            force_method=ScrapingMethod(method) if method else None
+            force_method=ScrapingMethod(method) if method else None,
+            css_selector=css_selector
         )
 
         result = await scrape_svc.scrape(request)

@@ -58,9 +58,14 @@ def build_error_response(url: str, method: str, error) -> dict:
     }
 
 
-async def scrape_crawl4ai(url: str, cleaner) -> dict:
+async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None) -> dict:
     """
     Scrape using Crawl4AI (fast, JS-enabled)
+
+    Args:
+        url: URL to scrape
+        cleaner: ContentCleaner instance
+        css_selector: Optional CSS selector for targeted extraction
 
     Returns dict with keys: success, url, domain, method_used, title, content, metadata, error
     """
@@ -78,7 +83,7 @@ async def scrape_crawl4ai(url: str, cleaner) -> dict:
             if result.success:
                 domain = extract_domain(url)
                 html_content = result.html
-                clean_markdown = cleaner.clean(html_content, url)
+                clean_markdown = cleaner.clean(html_content, url, css_selector)
 
                 # Check minimum content length
                 if len(clean_markdown) < MIN_CONTENT_LENGTH:
@@ -106,9 +111,14 @@ async def scrape_crawl4ai(url: str, cleaner) -> dict:
         return build_error_response(url, "crawl4ai", e)
 
 
-async def scrape_selenium(url: str, cleaner) -> dict:
+async def scrape_selenium(url: str, cleaner, css_selector: str = None) -> dict:
     """
     Scrape using SeleniumBase with undetected Chrome mode
+
+    Args:
+        url: URL to scrape
+        cleaner: ContentCleaner instance
+        css_selector: Optional CSS selector for targeted extraction
 
     Returns dict with keys: success, url, domain, method_used, title, content, metadata, error
     """
@@ -128,7 +138,7 @@ async def scrape_selenium(url: str, cleaner) -> dict:
                 return html_content, title
 
         html_content, title = await loop.run_in_executor(None, _scrape_sync)
-        clean_markdown = cleaner.clean(html_content, url)
+        clean_markdown = cleaner.clean(html_content, url, css_selector)
 
         # Check minimum content length
         if len(clean_markdown) < MIN_CONTENT_LENGTH:
@@ -269,7 +279,8 @@ async def scrape_with_fallback(
     url: str,
     cleaner,
     db: Any,
-    force_method: str | None = None
+    force_method: str | None = None,
+    css_selector: str | None = None
 ) -> dict:
     """
     Main scraping routing logic with fallback chain
@@ -283,6 +294,13 @@ async def scrape_with_fallback(
     6. Try Crawl4AI
     7. Try Selenium (if Crawl4AI failed)
     8. Blacklist if all failed
+
+    Args:
+        url: URL to scrape
+        cleaner: ContentCleaner instance
+        db: Database instance
+        force_method: Force specific scraping method
+        css_selector: Optional CSS selector for targeted extraction
 
     Returns dict response
     """
@@ -315,21 +333,21 @@ async def scrape_with_fallback(
 
     # Force method?
     if force_method:
-        return await _scrape_with_method(url, force_method, cleaner)
+        return await _scrape_with_method(url, force_method, cleaner, css_selector)
 
     # Check database for preferred method
     preferred = await db.get_domain_method(domain)
 
     if preferred == "selenium":
         logger.info(f"Database says use Selenium for {domain}")
-        result = await scrape_selenium(url, cleaner)
+        result = await scrape_selenium(url, cleaner, css_selector)
         if result["success"]:
             await db.record_success(domain, "selenium")
             return result
         # If failed, continue to try other methods
 
     # Try Crawl4AI first (fast)
-    result = await scrape_crawl4ai(url, cleaner)
+    result = await scrape_crawl4ai(url, cleaner, css_selector)
     if result["success"]:
         await db.record_success(domain, "crawl4ai")
         return result
@@ -338,7 +356,7 @@ async def scrape_with_fallback(
     logger.warning(f"Crawl4AI failed for {domain}, trying Selenium")
     await db.set_selenium_only(domain)
 
-    result = await scrape_selenium(url, cleaner)
+    result = await scrape_selenium(url, cleaner, css_selector)
     if result["success"]:
         await db.record_success(domain, "selenium")
         return result
@@ -449,12 +467,12 @@ def format_reddit_content(url: str, data: dict) -> tuple[str, str]:
     return content, title or data.get("data", {}).get("title", "Reddit Thread") if isinstance(data, dict) else "Reddit Thread"
 
 
-async def _scrape_with_method(url: str, method: str, cleaner) -> dict:
+async def _scrape_with_method(url: str, method: str, cleaner, css_selector: str = None) -> dict:
     """Scrape using specific method"""
     if method == "crawl4ai":
-        return await scrape_crawl4ai(url, cleaner)
+        return await scrape_crawl4ai(url, cleaner, css_selector)
     elif method == "selenium":
-        return await scrape_selenium(url, cleaner)
+        return await scrape_selenium(url, cleaner, css_selector)
     elif method == "reddit_api":
         return await scrape_reddit(url, cleaner)
     elif method == "pdf":

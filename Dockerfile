@@ -94,6 +94,8 @@ WORKDIR /app
 # Copy virtual environment and source from builder
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
+# Copy Playwright browser cache
+COPY --from=builder /root/.cache /root/.cache
 
 # Create data directory
 RUN mkdir -p /app/data
