@@ -39,3 +39,7 @@ def create_async_singleton_factory(cls, name: str, init_method: str = None):
 
     factory.__name__ = name
     return factory
+
+
+# Legacy alias for backward compatibility
+singleton = create_singleton_factory

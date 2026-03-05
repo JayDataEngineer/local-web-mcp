@@ -1,7 +1,6 @@
 """HTTP client utilities"""
 
 import httpx
-from typing import Optional
 
 
 def create_async_client(timeout: float = 30.0) -> httpx.AsyncClient:

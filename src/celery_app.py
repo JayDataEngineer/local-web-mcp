@@ -1,6 +1,8 @@
-"""Celery configuration for MCP Server"""
+"""Celery configuration for MCP Server with scheduled tasks"""
 
 from celery import Celery
+from celery.schedules import crontab
+from loguru import logger
 
 from .constants import (
     CELERY_TASK_TIMEOUT_SECONDS,
@@ -31,17 +33,28 @@ app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
+
+    # Celery Beat - periodic tasks
+    beat_schedule={
+        'cleanup-old-blacklisted-daily': {
+            'task': 'tasks.periodic.cleanup_blacklist',
+            'schedule': crontab(hour=2, minute=0),  # 2 AM daily
+            'kwargs': {'days_old': 7},  # Remove domains older than 7 days
+        },
+    },
 )
 
 # Import tasks explicitly (autodiscovery doesn't work with our structure)
 # This MUST happen after app is created
 from .tasks.scrape_tasks import scrape_task  # noqa: E402
+from .tasks import periodic_tasks  # noqa: E402 - Register periodic tasks
 
 
 @app.on_after_configure.connect
 def setup_periodic_tasks(sender, **kwargs):
-    """Setup any periodic tasks here if needed"""
-    pass
+    """Setup periodic tasks - this is where Beat registers them"""
+    logger.info("Celery Beat periodic tasks configured:")
+    logger.info("  - cleanup_blacklist: Daily at 2 AM (removes blacklisted domains >7 days old)")
 
 
 if __name__ == "__main__":

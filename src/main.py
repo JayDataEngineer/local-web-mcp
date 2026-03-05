@@ -70,6 +70,12 @@ async def root():
     return {"status": "ok", "service": "mcp-server"}
 
 
+@app.get("/health")
+async def health():
+    """Health check endpoint"""
+    return {"status": "healthy", "service": "mcp-server"}
+
+
 @app.post("/search", response_model=CombinedSearchResponse)
 async def search(
     query: str,
@@ -132,8 +138,7 @@ async def scrape(request: ScrapeRequest):
                 'scrape_task',
                 args=[request.url],
                 kwargs={
-                    'force_method': request.force_method.value if request.force_method else None,
-                    'include_summary': request.include_summary
+                    'force_method': request.force_method.value if request.force_method else None
                 }
             )
 
