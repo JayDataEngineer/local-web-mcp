@@ -1,40 +1,21 @@
 """Redis caching service for scrape and search results"""
 
 import json
-import asyncio
 from typing import Optional
 from loguru import logger
-import os
+
+from ..utils.redis_mixin import RedisMixin
 
 
-class CacheService:
+class CacheService(RedisMixin):
     """Redis-backed caching for search and scrape results"""
 
-    def __init__(self, redis_url: str = None):
-        if redis_url is None:
-            redis_url = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
-
-        self.redis_url = redis_url
-        self._redis = None
-
     async def _get_redis(self):
-        """Get Redis connection (lazy initialization)"""
-        import redis.asyncio as aioredis
-
-        if self._redis is None:
-            self._redis = await aioredis.from_url(
-                self.redis_url,
-                encoding="utf-8",
-                decode_responses=True
-            )
+        """Get Redis connection (lazy initialization) with logging"""
+        redis = await super()._get_redis()
+        if self._redis is None or redis == self._redis:
             logger.info(f"Cache connected to Redis: {self.redis_url}")
-        return self._redis
-
-    async def close(self):
-        """Close Redis connection"""
-        if self._redis:
-            await self._redis.close()
-            self._redis = None
+        return redis
 
     async def get_scrape(self, url: str) -> Optional[dict]:
         """Get cached scrape result"""

@@ -7,10 +7,11 @@ Uses semaphores stored in Redis to track active requests per domain.
 import asyncio
 from typing import Optional
 from loguru import logger
-from ..utils import create_singleton_factory
+
+from ..utils.redis_mixin import RedisMixin
 
 
-class RateLimitService:
+class RateLimitService(RedisMixin):
     """
     Domain-based rate limiting using Redis
 
@@ -34,34 +35,10 @@ class RateLimitService:
             acquire_timeout: Max seconds to wait for permit (default: 30)
             ttl: Lock TTL in seconds - auto-releases if process crashes (default: 300)
         """
-        import os
-
-        if redis_url is None:
-            redis_url = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
-
-        self.redis_url = redis_url
+        super().__init__(redis_url)
         self.max_concurrent = max_concurrent
         self.acquire_timeout = acquire_timeout
         self.ttl = ttl
-        self._redis = None
-
-    async def _get_redis(self):
-        """Get Redis connection (lazy initialization)"""
-        import redis.asyncio as aioredis
-
-        if self._redis is None:
-            self._redis = await aioredis.from_url(
-                self.redis_url,
-                encoding="utf-8",
-                decode_responses=True
-            )
-        return self._redis
-
-    async def close(self):
-        """Close Redis connection"""
-        if self._redis:
-            await self._redis.close()
-            self._redis = None
 
     async def acquire(
         self,
@@ -177,4 +154,5 @@ class RateLimitService:
 
 
 # Singleton factory
+from ..utils import create_singleton_factory
 get_rate_limit_service = create_singleton_factory(RateLimitService, "get_rate_limit_service")

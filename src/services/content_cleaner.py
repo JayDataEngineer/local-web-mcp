@@ -134,17 +134,18 @@ class ContentCleaner:
         if not text:
             return ""
 
-        lines = text.split("\n")
-        cleaned = []
+        import re
 
-        for line in lines:
-            line = line.strip()
-            if line:
-                # Remove duplicate spaces within lines
-                line = " ".join(line.split())
-                cleaned.append(line)
+        # Remove duplicate spaces within lines
+        text = re.sub(r' +', ' ', text)
 
-        return "\n\n".join(cleaned)
+        # Compress multiple blank lines to max one
+        text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
+
+        # Strip leading/trailing whitespace from each line
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+
+        return '\n\n'.join(lines)
 
     # ========== EXTRACTION METHODS (HTML output only) ==========
 
