@@ -1,5 +1,8 @@
 """Singleton pattern factories for services"""
 
+import asyncio
+from typing import Callable
+
 
 def create_singleton_factory(cls, name: str, init_method: str = None):
     """Create a singleton factory function"""
@@ -9,14 +12,6 @@ def create_singleton_factory(cls, name: str, init_method: str = None):
         nonlocal instance
         if instance is None:
             instance = cls(**kwargs)
-            if init_method:
-                import asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(getattr(instance, init_method)())
-                finally:
-                    loop.close()
         return instance
 
     factory.__name__ = name
@@ -39,7 +34,3 @@ def create_async_singleton_factory(cls, name: str, init_method: str = None):
 
     factory.__name__ = name
     return factory
-
-
-# Legacy alias for backward compatibility
-singleton = create_singleton_factory
