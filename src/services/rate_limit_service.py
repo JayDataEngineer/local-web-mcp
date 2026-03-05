@@ -109,7 +109,7 @@ class RateLimitService:
 
             # Too many requests - decrement and wait
             await redis.decr(key)
-            wait_time = min(0.5, deadline - now)
+            wait_time = min(0.5, deadline - now)  # Wait up to 500ms
             if wait_time <= 0:
                 logger.warning(f"Rate limit timeout for {domain}")
                 return False
@@ -176,5 +176,34 @@ class RateLimitService:
             logger.error(f"Error clearing rate limit for {domain}: {e}")
 
 
+class DomainRateLimiter:
+    """
+    Context manager for domain rate limiting
+
+    Usage:
+        async with rate_limiter.limit("example.com"):
+            await scrape_url("https://example.com/page")
+    """
+
+    def __init__(self, rate_service: RateLimitService, domain: str):
+        self.rate_service = rate_service
+        self.domain = domain
+        self._acquired = False
+
+    async def __aenter__(self):
+        acquired = await self.rate_service.acquire(self.domain)
+        if not acquired:
+            raise TimeoutError(f"Could not acquire rate limit for {self.domain}")
+        self._acquired = True
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._acquired:
+            await self.rate_service.release(self.domain)
+
+
 # Singleton factory
-get_rate_limit_service = create_singleton_factory(RateLimitService, "get_rate_limit_service")
+get_rate_limit_service = create_singleton_factory(
+    RateLimitService,
+    "get_rate_limit_service"
+)

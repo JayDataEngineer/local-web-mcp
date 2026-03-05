@@ -8,72 +8,99 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Best Practice: Copy uv.lock alongside pyproject.toml for reproducible builds
-COPY pyproject.toml uv.lock* ./
-
-# Create virtual environment and install only python dependencies
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv venv /app/.venv && \
-    uv sync --no-dev --no-install-project
-
-# =============================================================================
-# Final stage - Runtime & Browsers
-# =============================================================================
-FROM python:3.13-slim-bookworm
-
-WORKDIR /app
-
-# 1. Copy virtual environment from builder BEFORE installing browsers
-COPY --from=builder /app/.venv /app/.venv
-ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONPATH=/app
-
-# 2. Install minimal basics needed for browser download tools
+# Install system dependencies needed for browsers
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     curl \
     wget \
-    xvfb \
-    && rm -rf /var/lib/apt/lists/*
-
-# 3. Let Playwright do the heavy lifting of installing system dependencies (--with-deps)
-#    and the actual Chromium binary straight into the final image
-RUN playwright install --with-deps chromium
-
-# 4. Install Google Chrome for SeleniumBase
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    fonts-liberation \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libgtk-3-0 \
-    libnspr4 \
+    libglib2.0-0 \
     libnss3 \
-    libwayland-client0 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
     libxcomposite1 \
     libxdamage1 \
     libxfixes3 \
-    libxkbcommon0 \
     libxrandr2 \
-    xdg-utils \
-    && wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
-    && apt-get install -y ./google-chrome-stable_current_amd64.deb \
-    && rm google-chrome-stable_current_amd64.deb \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libatspi2.0-0 \
+    libxshmfence1 \
+    libxkbfile1 \
+    libasound2 \
+    libasound2-data \
+    libu2f-udev \
+    libvulkan1 \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-# 5. Install SeleniumBase chromedriver (downloads directly to the final image)
-RUN seleniumbase get chromedriver
+# Copy dependency files
+COPY pyproject.toml ./
 
-# 5. Copy the source code last (so code changes don't invalidate the browser cache!)
+# Create virtual environment and install dependencies
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv venv /app/.venv && \
+    uv sync --no-dev
+
+# Install Playwright Chromium
+RUN .venv/bin/playwright install --with-deps chromium
+
+# Install SeleniumBase chromedriver
+RUN .venv/bin/seleniumbase get chromedriver
+
+# Copy source code
 COPY src/ /app/src/
+
+# =============================================================================
+# Final stage
+# =============================================================================
+FROM python:3.13-slim-bookworm
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libatspi2.0-0 \
+    libxshmfence1 \
+    libxkbfile1 \
+    libasound2 \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    xvfb \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy virtual environment and source from builder
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/src /app/src
 
 # Create data directory
 RUN mkdir -p /app/data
+
+# Add venv to PATH
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONPATH=/app
 
 EXPOSE 8000
 

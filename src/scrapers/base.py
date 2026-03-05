@@ -1,6 +1,7 @@
 """Shared scraping implementations - used by both FastAPI and Celery"""
 
 from typing import Callable, Any
+from urllib.parse import urlparse
 from loguru import logger
 from datetime import datetime
 
@@ -10,7 +11,6 @@ from ..constants import (
     MIN_CONTENT_LENGTH,
     DEFAULT_HEADERS,
 )
-from ..utils import extract_domain, build_scrape_response, build_content_too_short_response, build_error_response
 
 
 async def scrape_crawl4ai(url: str, cleaner) -> dict:
@@ -31,76 +31,110 @@ async def scrape_crawl4ai(url: str, cleaner) -> dict:
             )
 
             if result.success:
-                domain = extract_domain(url)
+                domain = urlparse(url).netloc
                 html_content = result.html
                 clean_markdown = cleaner.clean(html_content, url)
 
                 # Check minimum content length
                 if len(clean_markdown) < MIN_CONTENT_LENGTH:
-                    return build_content_too_short_response(url, "crawl4ai", len(clean_markdown))
+                    return {
+                        "success": False,
+                        "url": url,
+                        "domain": domain,
+                        "method_used": "crawl4ai",
+                        "error": f"Content too short: {len(clean_markdown)} chars"
+                    }
 
                 title = result.metadata.get("title", "") if hasattr(result, "metadata") else ""
 
-                return build_scrape_response(
-                    success=True,
-                    url=url,
-                    method="crawl4ai",
-                    title=title,
-                    content=clean_markdown,
-                    metadata=_build_metadata(len(clean_markdown.split())),
-                )
+                return {
+                    "success": True,
+                    "url": url,
+                    "domain": domain,
+                    "method_used": "crawl4ai",
+                    "title": title,
+                    "content": clean_markdown,
+                    "metadata": _build_metadata(len(clean_markdown.split())),
+                }
 
         # If we get here, Crawl4AI didn't succeed
-        return build_error_response(url, "crawl4ai", "Scraping failed")
+        return {
+            "success": False,
+            "url": url,
+            "domain": urlparse(url).netloc,
+            "method_used": "crawl4ai",
+            "error": "Scraping failed"
+        }
 
     except ImportError:
         logger.warning("Crawl4AI not installed")
-        return build_error_response(url, "crawl4ai", "Crawl4AI not installed")
+        return {
+            "success": False,
+            "url": url,
+            "domain": urlparse(url).netloc,
+            "method_used": "crawl4ai",
+            "error": "Crawl4AI not installed"
+        }
     except Exception as e:
         logger.warning(f"Crawl4AI error for {url}: {e}")
-        return build_error_response(url, "crawl4ai", e)
+        return {
+            "success": False,
+            "url": url,
+            "domain": urlparse(url).netloc,
+            "method_used": "crawl4ai",
+            "error": str(e)
+        }
 
 
 async def scrape_selenium(url: str, cleaner) -> dict:
     """
-    Scrape using SeleniumBase with undetected Chrome mode
+    Scrape using SeleniumBase Pure CDP mode (stealth)
 
     Returns dict with keys: success, url, domain, method_used, title, content, metadata, error
     """
     try:
-        from seleniumbase import DriverContext
-
-        # Run sync Selenium in thread pool to avoid blocking
+        from seleniumbase import cdp_driver
         import asyncio
-        loop = asyncio.get_event_loop()
 
-        def _scrape_sync():
-            with DriverContext(uc=True, headless=True) as driver:
-                driver.open(url)
-                driver.sleep(SELENIUM_PAGE_LOAD_WAIT_SECONDS)
-                html_content = driver.get_page_source()
-                title = driver.get_title()
-                return html_content, title
+        driver = await cdp_driver.start_async()
+        await driver.get(url)
+        await asyncio.sleep(SELENIUM_PAGE_LOAD_WAIT_SECONDS)
 
-        html_content, title = await loop.run_in_executor(None, _scrape_sync)
+        html_content = await driver.get_page_source()
+        title = await driver.get_title()
+        await driver.stop()
+
         clean_markdown = cleaner.clean(html_content, url)
 
         # Check minimum content length
         if len(clean_markdown) < MIN_CONTENT_LENGTH:
-            return build_content_too_short_response(url, "selenium", len(clean_markdown))
+            return {
+                "success": False,
+                "url": url,
+                "domain": urlparse(url).netloc,
+                "method_used": "selenium",
+                "error": f"Content too short: {len(clean_markdown)} chars"
+            }
 
-        return build_scrape_response(
-            success=True,
-            url=url,
-            method="selenium",
-            title=title,
-            content=clean_markdown,
-            metadata=_build_metadata(len(clean_markdown.split())),
-        )
+        return {
+            "success": True,
+            "url": url,
+            "domain": urlparse(url).netloc,
+            "method_used": "selenium",
+            "title": title,
+            "content": clean_markdown,
+            "metadata": _build_metadata(len(clean_markdown.split())),
+        }
 
     except Exception as e:
         logger.warning(f"Selenium error for {url}: {e}")
-        return build_error_response(url, "selenium", e)
+        return {
+            "success": False,
+            "url": url,
+            "domain": urlparse(url).netloc,
+            "method_used": "selenium",
+            "error": str(e)
+        }
 
 
 async def scrape_reddit(url: str, cleaner=None) -> dict:
@@ -122,102 +156,24 @@ async def scrape_reddit(url: str, cleaner=None) -> dict:
 
         content, title = format_reddit_content(url, data)
 
-        return build_scrape_response(
-            success=True,
-            url=url,
-            method="reddit_api",
-            title=title,
-            content=content.strip(),
-        )
+        return {
+            "success": True,
+            "url": url,
+            "domain": "reddit.com",
+            "method_used": "reddit_api",
+            "title": title,
+            "content": content.strip(),
+        }
 
     except Exception as e:
         logger.error(f"Reddit API error for {url}: {e}")
-        return build_error_response(url, "reddit_api", e)
-
-
-async def scrape_pdf(url: str, cleaner=None) -> dict:
-    """
-    Scrape PDF files by downloading and extracting text content
-
-    Returns dict with keys: success, url, domain, method_used, title, content, metadata, error
-    """
-    import httpx
-    import fitz  # PyMuPDF
-    import io
-
-    try:
-        logger.info(f"Downloading PDF: {url}")
-
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=DEFAULT_HEADERS)
-            response.raise_for_status()
-
-            # Verify it's actually a PDF
-            content_type = response.headers.get("content-type", "")
-            if "application/pdf" not in content_type and not url.lower().endswith(".pdf"):
-                logger.warning(f"URL doesn't appear to be a PDF: {content_type}")
-
-            pdf_data = response.content
-            pdf_file = io.BytesIO(pdf_data)
-
-            # Open PDF with PyMuPDF
-            doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-
-            if doc.is_encrypted:
-                return build_error_response(url, "pdf", "PDF is password protected")
-
-            # Extract content from all pages
-            markdown_content = []
-            metadata = {
-                "pages": len(doc),
-                "fetched_at": datetime.now().isoformat()
-            }
-
-            # Get PDF metadata for title
-            pdf_metadata = doc.metadata
-            pdf_title = pdf_metadata.get("title") or pdf_metadata.get("subject", "")
-
-            # Extract text from each page
-            for page_num in range(len(doc)):
-                page = doc[page_num]
-                text = page.get_text("text")
-
-                if text.strip():
-                    # Add page header
-                    markdown_content.append(f"\n## Page {page_num + 1}\n\n")
-                    markdown_content.append(text)
-
-            doc.close()
-
-            if not markdown_content:
-                return build_error_response(url, "pdf", "No text content found in PDF")
-
-            full_content = "".join(markdown_content)
-            word_count = len(full_content.split())
-            metadata["word_count"] = word_count
-
-            # Use filename from URL as fallback title
-            if not pdf_title:
-                pdf_title = url.split("/")[-1].replace(".pdf", "").replace("_", " ").replace("-", " ").title()
-
-            return build_scrape_response(
-                success=True,
-                url=url,
-                method="pdf",
-                title=pdf_title,
-                content=full_content.strip(),
-                metadata=metadata,
-            )
-
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error downloading PDF {url}: {e}")
-        return build_error_response(url, "pdf", f"HTTP error: {e.response.status_code}")
-    except httpx.TimeoutException:
-        logger.error(f"Timeout downloading PDF {url}")
-        return build_error_response(url, "pdf", "Download timeout")
-    except Exception as e:
-        logger.error(f"PDF processing error for {url}: {e}")
-        return build_error_response(url, "pdf", str(e))
+        return {
+            "success": False,
+            "url": url,
+            "domain": "reddit.com",
+            "method_used": "reddit_api",
+            "error": str(e)
+        }
 
 
 async def scrape_with_fallback(
@@ -230,35 +186,27 @@ async def scrape_with_fallback(
     Main scraping routing logic with fallback chain
 
     Flow:
-    1. Check if PDF → Use PDF scraper
-    2. Check blacklist
-    3. Reddit? → JSON API
-    4. Force method? → Use it
-    5. DB prefers selenium? → Try selenium first
-    6. Try Crawl4AI
-    7. Try Selenium (if Crawl4AI failed)
-    8. Blacklist if all failed
+    1. Check blacklist
+    2. Reddit? → JSON API
+    3. Force method? → Use it
+    4. DB prefers selenium? → Try selenium first
+    5. Try Crawl4AI
+    6. Try Selenium (if Crawl4AI failed)
+    7. Blacklist if all failed
 
     Returns dict response
     """
-    domain = extract_domain(url)
-
-    # Special handler: PDF files
-    if url.lower().endswith(".pdf") or "pdf" in url.lower():
-        logger.info(f"Using PDF scraper for {url}")
-        result = await scrape_pdf(url)
-        if result["success"]:
-            await db.record_success(domain, "pdf")
-        return result
+    domain = urlparse(url).netloc
 
     # Check blacklist
     if await db.is_blacklisted(domain):
-        return build_scrape_response(
-            success=False,
-            url=url,
-            method="blacklisted",
-            error="Domain is blacklisted",
-        )
+        return {
+            "success": False,
+            "url": url,
+            "domain": domain,
+            "method_used": "blacklisted",
+            "error": "Domain is blacklisted"
+        }
 
     # Special handler: Reddit API
     if "reddit.com" in domain or "redd.it" in domain:
@@ -302,12 +250,13 @@ async def scrape_with_fallback(
     logger.error(f"All methods failed for {domain}, blacklisting")
     await db.blacklist(domain)
 
-    return build_scrape_response(
-        success=False,
-        url=url,
-        method="blacklisted",
-        error="All scraping methods failed",
-    )
+    return {
+        "success": False,
+        "url": url,
+        "domain": domain,
+        "method_used": "blacklisted",
+        "error": "All scraping methods failed"
+    }
 
 
 def normalize_reddit_url(url: str) -> str:
@@ -412,10 +361,14 @@ async def _scrape_with_method(url: str, method: str, cleaner) -> dict:
         return await scrape_selenium(url, cleaner)
     elif method == "reddit_api":
         return await scrape_reddit(url, cleaner)
-    elif method == "pdf":
-        return await scrape_pdf(url, cleaner)
     else:
-        return build_error_response(url, method, "Unknown method")
+        return {
+            "success": False,
+            "url": url,
+            "domain": urlparse(url).netloc,
+            "method_used": method,
+            "error": "Unknown method"
+        }
 
 
 def _build_metadata(word_count: int) -> dict:

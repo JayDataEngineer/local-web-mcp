@@ -1,10 +1,9 @@
-"""Celery task for scraping with concurrency control and caching"""
+"""Celery task for scraping with concurrency control"""
 
-import asyncio
 from celery import Task
-from ..utils import extract_domain
+from loguru import logger
 
-from ..celery_app import app
+from celery_app import app
 from ..models.unified import ScrapeResponse, ScrapingMethod
 from ..db.database import Database
 from ..scrapers.base import scrape_with_fallback
@@ -16,9 +15,6 @@ class ScrapeTask(Task):
 
     _db = None
     _cleaner = None
-    _cache = None
-    _cache_loop = None
-    _rate_limiter = None
 
     @property
     def db(self) -> Database:
@@ -34,46 +30,6 @@ class ScrapeTask(Task):
             self._cleaner = get_content_cleaner()
         return self._cleaner
 
-    def _run_async(self, coro):
-        """Run an async coroutine in the Celery worker context"""
-        # Reuse or create event loop for this thread
-        if self._cache_loop is None or self._cache_loop.is_closed():
-            self._cache_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._cache_loop)
-        return self._cache_loop.run_until_complete(coro)
-
-    @property
-    def cache(self):
-        """Lazy init cache service (sync wrapper)"""
-        if self._cache is None:
-            try:
-                from ..services.cache_service import get_cache_service
-                self._cache = get_cache_service()
-                # Initialize Redis connection
-                try:
-                    self._run_async(self._cache._get_redis())
-                except Exception as e:
-                    # Cache not available, that's okay
-                    self._cache = None
-            except Exception as e:
-                # Cache service not available
-                self._cache = None
-        return self._cache
-
-    @property
-    def rate_limiter(self):
-        """Lazy init rate limit service"""
-        if self._rate_limiter is None:
-            try:
-                from ..services.rate_limit_service import get_rate_limit_service
-                self._rate_limiter = get_rate_limit_service()
-            except Exception as e:
-                # Rate limiter not available
-                from loguru import logger
-                logger.warning(f"Rate limiter not available: {e}")
-                self._rate_limiter = False  # Marker to not retry
-        return self._rate_limiter if self._rate_limiter is not False else None
-
     def after_return(self, *args, **kwargs):
         """Cleanup after task completes"""
         # Keep resources alive for reuse in worker process
@@ -81,53 +37,20 @@ class ScrapeTask(Task):
 
 
 @app.task(bind=True, base=ScrapeTask, name="scrape_task")
-def scrape_task(
-    self,
-    url: str,
-    force_method: str | None = None
-) -> dict:
+def scrape_task(self, url: str, force_method: str | None = None) -> dict:
     """
-    Scrape a URL with automatic method routing, caching, and rate limiting
+    Scrape a URL with automatic method routing
 
     This runs in the Celery worker with controlled concurrency.
     Returns dict that can be serialized to JSON for Redis.
     """
-    from loguru import logger
+    import asyncio
 
-    domain = extract_domain(url)
-
-    # Check cache first (bypasses rate limiting)
-    if self.cache is not None:
-        try:
-            cached_result = self._run_async(self.cache.get_scrape(url))
-            if cached_result:
-                # Mark as cached and return immediately
-                cached_result["cached"] = True
-                return cached_result
-        except Exception as e:
-            # Cache miss or error, continue with scraping
-            pass
-
-    # Apply rate limiting
-    rate_limiter = self.rate_limiter
-    if rate_limiter:
-        try:
-            acquired = self._run_async(rate_limiter.acquire(domain))
-            if not acquired:
-                return {
-                    "success": False,
-                    "url": url,
-                    "domain": domain,
-                    "method_used": "crawl4ai",
-                    "error": "Rate limit: Too many concurrent requests to this domain.",
-                    "cached": False
-                }
-        except Exception as e:
-            logger.warning(f"Rate limiter error for {domain}: {e}")
-
+    # Run the async scrape in a new event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        # Run the async scrape in a new event loop
-        result = self._run_async(
+        result = loop.run_until_complete(
             scrape_with_fallback(
                 url=url,
                 cleaner=self.cleaner,
@@ -135,23 +58,6 @@ def scrape_task(
                 force_method=force_method
             )
         )
-
-        # Mark as not from cache
-        result["cached"] = False
-
-        # Cache successful results
-        if result.get("success") and self.cache is not None:
-            try:
-                self._run_async(self.cache.set_scrape(url, result))
-            except Exception:
-                pass  # Cache set failed, but scrape succeeded
-
         return result
-
     finally:
-        # Always release rate limit permit
-        if rate_limiter:
-            try:
-                self._run_async(rate_limiter.release(domain))
-            except Exception as e:
-                logger.warning(f"Error releasing rate limit for {domain}: {e}")
+        loop.close()

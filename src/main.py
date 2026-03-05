@@ -12,10 +12,7 @@ from .models.unified import (
     ScrapeRequest,
     ScrapeResponse,
     CheckRequest,
-    CheckResponse,
-    TaskResponse,
-    TaskStatusResponse,
-    TaskStatus,
+    CheckResponse
 )
 from .services.search_service import get_search_service
 from .services.scrape_service import get_scrape_service
@@ -70,19 +67,7 @@ app.add_middleware(
 @app.get("/")
 async def root():
     """Health check"""
-    return {"status": "ok", "service": "mcp-server", "celery_enabled": CELERY_AVAILABLE}
-
-
-@app.get("/health")
-async def health():
-    """Detailed health check for Docker"""
-    from datetime import datetime
-    return {
-        "status": "healthy",
-        "service": "mcp-server",
-        "celery_enabled": CELERY_AVAILABLE,
-        "timestamp": datetime.now().isoformat()
-    }
+    return {"status": "ok", "service": "mcp-server"}
 
 
 @app.post("/search", response_model=CombinedSearchResponse)
@@ -114,128 +99,49 @@ async def search(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/scrape", response_model=TaskResponse)
+@app.post("/scrape", response_model=ScrapeResponse)
 async def scrape(request: ScrapeRequest):
     """
-    Submit a scrape job to the queue (non-blocking)
-
-    Returns immediately with a task_id. Poll /status/{task_id} for results.
+    Scrape a URL with automatic routing
 
     Flow:
     1. Check blacklist → reject if blacklisted
     2. Check database → use known preferred method
-    3. Queue to Celery worker
-    4. Return task_id immediately
+    3. Try Crawl4AI (fast)
+    4. Fallback to Selenium (stealth)
+    5. Blacklist if both fail
 
     Special handlers:
     - Reddit → Reddit API → JSON → Markdown
-    """
-    if not CELERY_AVAILABLE:
-        raise HTTPException(
-            status_code=503,
-            detail="Celery not available. Queue processing is disabled."
-        )
-
-    try:
-        # Send task to Celery by name
-        task = celery_app.send_task(
-            'scrape_task',
-            args=[request.url],
-            kwargs={
-                'force_method': request.force_method.value if request.force_method else None,
-            }
-        )
-
-        return TaskResponse(
-            task_id=task.id,
-            status=TaskStatus.PENDING,
-            message=f"Scrape job queued for {request.url}. Poll /status/{task.id} for results."
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to queue scrape for {request.url}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/status/{task_id}", response_model=TaskStatusResponse)
-async def get_task_status(task_id: str):
-    """
-    Poll the status of a scrape task
 
     Returns:
-    - PENDING: Task is waiting in queue
-    - STARTED: Task is being processed
-    - SUCCESS: Task completed (result included)
-    - FAILURE: Task failed (error included)
+    Unified ScrapeResponse with content and optional AI summary
+
+    To enable AI summary, set include_summary=true in the request.
+
+    Note: When Celery is available, the task is queued to a worker
+    with controlled concurrency (max 10 browsers). The endpoint waits
+    for the result to maintain MCP compatibility.
     """
-    if not CELERY_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Celery not available")
-
-    try:
-        result = AsyncResult(task_id, app=celery_app)
-
-        status_map = {
-            "PENDING": TaskStatus.PENDING,
-            "STARTED": TaskStatus.STARTED,
-            "SUCCESS": TaskStatus.SUCCESS,
-            "FAILURE": TaskStatus.FAILURE,
-            "REVOKED": TaskStatus.REVOKED,
-            "RETRY": TaskStatus.RETRY,
-        }
-
-        task_status = status_map.get(result.state, TaskStatus.PENDING)
-
-        response = TaskStatusResponse(
-            task_id=task_id,
-            status=task_status,
-        )
-
-        # Add timing info if available
-        if result.info:
-            info = result.info if not isinstance(result.info, Exception) else {}
-            if isinstance(info, dict):
-                response.created_at = info.get("created_at")
-                response.started_at = info.get("started_at")
-                response.completed_at = info.get("completed_at")
-
-        # Add result if successful
-        if result.ready() and result.successful():
-            response.result = ScrapeResponse(**result.result)
-
-        # Add error if failed
-        if result.ready() and result.failed():
-            response.error = str(result.info)
-
-        return response
-
-    except Exception as e:
-        logger.error(f"Failed to get status for {task_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/scrape/sync", response_model=ScrapeResponse)
-async def scrape_sync(request: ScrapeRequest):
-    """
-    Synchronous scrape (blocks until complete)
-
-    WARNING: This endpoint blocks for ~5 seconds. Use /scrape + /status/{task_id}
-    for production use. This endpoint is mainly for testing/debugging.
-
-    Direct scraping fallback if Celery is not available.
-    """
-    # If Celery is available, use it but block (old behavior)
+    # Use Celery if available for concurrency control
     if CELERY_AVAILABLE:
         try:
+            from .celery_app import app as celery_app
+            # Send task to Celery by name
             task = celery_app.send_task(
                 'scrape_task',
                 args=[request.url],
                 kwargs={
                     'force_method': request.force_method.value if request.force_method else None,
+                    'include_summary': request.include_summary
                 }
             )
 
-            # Block until result is ready (OLD BEHAVIOR - AVOID IN PRODUCTION)
+            # Block until result is ready (keeps MCP contract)
+            # Timeout after 5 minutes
             result_dict = task.get(timeout=300)
+
+            # Convert dict back to ScrapeResponse
             return ScrapeResponse(**result_dict)
 
         except Exception as e:
@@ -309,49 +215,6 @@ async def list_domains():
         "total": len(domains),
         "domains": domains
     }
-
-
-@app.post("/cache/clear")
-async def clear_cache():
-    """
-    Clear all cached scrape and search results
-
-    Forces fresh fetches on next requests.
-    """
-    from .services.cache_service import get_cache_service
-    cache = get_cache_service()
-
-    try:
-        count = await cache.clear_all()
-        return {
-            "status": "success",
-            "cleared_items": count
-        }
-    except Exception as e:
-        logger.error(f"Cache clear failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/cache/invalidate")
-async def invalidate_cache(url: str):
-    """
-    Invalidate cache for a specific URL
-
-    Forces a fresh scrape on the next request for this URL.
-    """
-    from .services.cache_service import get_cache_service
-    cache = get_cache_service()
-
-    try:
-        success = await cache.invalidate_scrape(url)
-        return {
-            "status": "success" if success else "failed",
-            "url": url,
-            "invalidated": success
-        }
-    except Exception as e:
-        logger.error(f"Cache invalidation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

@@ -151,6 +151,12 @@ class ContentCleaner:
         return "\n\n".join(cleaned)
 
 
-# Singleton factory
-from ..utils import create_singleton_factory
-get_content_cleaner = create_singleton_factory(ContentCleaner, "get_content_cleaner")
+# Singleton
+_cleaner: ContentCleaner = None
+
+
+def get_content_cleaner() -> ContentCleaner:
+    global _cleaner
+    if _cleaner is None:
+        _cleaner = ContentCleaner()
+    return _cleaner

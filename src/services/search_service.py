@@ -1,44 +1,42 @@
-"""Unified search service - SearXNG multi-engine with caching"""
+"""Unified search service - SearXNG multi-engine"""
 
 import asyncio
-from typing import List, Set, Optional
+import httpx
+from typing import List, Dict, Set
 from loguru import logger
 from urllib.parse import urlparse
 
 from ..models.unified import SearchResult, CombinedSearchResponse
-from ..constants import DEFAULT_SEARCH_ENGINES
-from ..utils import extract_domain, create_async_client, create_singleton_factory
+from ..db.database import Database
+from ..constants import DEFAULT_SEARCH_ENGINES, HTTP_REQUEST_TIMEOUT
 
 
 class UnifiedSearchService:
-    """SearXNG multi-engine search with unified output format and caching"""
+    """SearXNG multi-engine search with unified output format"""
 
     def __init__(
         self,
         searxng_url: str = "http://searxng:8080",
-        db: Optional['Database'] = None,
     ):
         self.searxng_url = searxng_url
-        self.client = create_async_client()
-        self._db = db
-        self._db_instance = None
-        self._cache = None
+        self.client = httpx.AsyncClient(timeout=HTTP_REQUEST_TIMEOUT, follow_redirects=True)
+        self._db = None
 
-    async def _get_db(self):
-        """Get database instance (lazy async initialization)"""
-        if self._db is not None:
-            return self._db
-        if self._db_instance is None:
+    @property
+    def db(self) -> Database:
+        """Get database instance (lazy initialization)"""
+        if self._db is None:
             from ..db.database import get_db
-            self._db_instance = await get_db()
-        return self._db_instance
 
-    async def _get_cache(self):
-        """Get cache service (lazy async initialization)"""
-        if self._cache is None:
-            from ..services.cache_service import get_cache_service
-            self._cache = get_cache_service()
-        return self._cache
+            # Get or create the singleton DB
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            self._db = loop.run_until_complete(get_db())
+        return self._db
 
     async def search(
         self,
@@ -47,7 +45,7 @@ class UnifiedSearchService:
         exclude_blacklist: bool = True
     ) -> CombinedSearchResponse:
         """
-        Search SearXNG with pagination and caching
+        Search SearXNG with pagination
 
         Args:
             query: Search query
@@ -57,22 +55,12 @@ class UnifiedSearchService:
         Returns:
             CombinedSearchResponse with unified format
         """
-        # Check cache first
-        cache = await self._get_cache()
-        cached = await cache.get_search(query, pages, exclude_blacklist)
-        if cached:
-            logger.info(f"Cache HIT for search: {query}")
-            # Add cache indicator
-            cached["cached"] = True
-            return CombinedSearchResponse(**cached)
-
         start_time = asyncio.get_event_loop().time()
 
         # Get blacklist if needed
         blacklisted_domains: Set[str] = set()
         if exclude_blacklist:
-            db = await self._get_db()
-            blacklisted_domains = await db.get_blacklisted_domains()
+            blacklisted_domains = await self.db.get_blacklisted_domains()
             logger.info(f"Blacklisted domains: {blacklisted_domains}")
 
         results = await self._search_searxng(query, pages, blacklisted_domains)
@@ -87,20 +75,14 @@ class UnifiedSearchService:
 
         search_time_ms = (asyncio.get_event_loop().time() - start_time) * 1000
 
-        response = CombinedSearchResponse(
+        return CombinedSearchResponse(
             query=query,
             total_results=len(unique_results),
             pages_scraped=pages,
             results=unique_results,
             engines={"searxng": len(results)},
-            search_time_ms=round(search_time_ms, 2),
-            cached=False
+            search_time_ms=round(search_time_ms, 2)
         )
-
-        # Cache the result
-        await cache.set_search(query, pages, exclude_blacklist, response.model_dump())
-
-        return response
 
     async def _search_searxng(self, query: str, pages: int, blacklisted_domains: Set[str] = None) -> List[SearchResult]:
         """Search SearXNG with proper pagination"""
@@ -127,7 +109,7 @@ class UnifiedSearchService:
 
                 for item in data.get("results", []):
                     url = item.get("url", "")
-                    domain = extract_domain(url) or urlparse(url).path
+                    domain = urlparse(url).netloc or urlparse(url).path
 
                     # Skip blacklisted domains
                     if domain in blacklisted_domains:
@@ -171,9 +153,14 @@ class UnifiedSearchService:
 
     async def close(self):
         await self.client.aclose()
-        if self._cache:
-            await self._cache.close()
 
 
-# Singleton factory
-get_search_service = create_singleton_factory(UnifiedSearchService, "get_search_service")
+# Singleton
+_search_service: UnifiedSearchService = None
+
+
+def get_search_service() -> UnifiedSearchService:
+    global _search_service
+    if _search_service is None:
+        _search_service = UnifiedSearchService()
+    return _search_service

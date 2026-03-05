@@ -28,9 +28,5 @@ dependencies = [
     "pymupdf>=1.24.0",
 ]
 
-[project.scripts]
-mcp-server = "src.mcp_server:main"
-mcp-server-sse = "src.main:main"
-
 [tool.uv]
 dev-dependencies = []

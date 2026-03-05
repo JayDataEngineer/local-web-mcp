@@ -9,9 +9,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 from langchain_ollama import ChatOllama
 from langchain.agents import create_tool_calling_agent, AgentExecutor
-from loguru import logger
-
-from ..utils import create_sync_client
+import httpx
 
 
 class MCPClient:
@@ -19,7 +17,7 @@ class MCPClient:
 
     def __init__(self, base_url: str = "http://localhost:8000"):
         self.base_url = base_url
-        self.client = create_sync_client(timeout=120.0)
+        self.client = httpx.Client(timeout=120.0)
 
     def search(self, query: str, pages: int = 3) -> dict:
         """Search the web"""
@@ -168,7 +166,7 @@ async def deep_research(query: str, model: str = "llama3.2") -> str:
     mcp = MCPClient()
 
     # Phase 1: Research
-    logger.info(f"{'='*60}\nPHASE 1: RESEARCHER\n{'='*60}")
+    print(f"\n{'='*60}\nPHASE 1: RESEARCHER\n{'='*60}")
     researcher = create_researcher_agent(model)
 
     research_prompt = f"""Search for: {query}
@@ -180,10 +178,10 @@ Find the most relevant and recent sources. Return the top 5 results with titles,
     # Parse URLs from research result
     import re
     urls = re.findall(r'URL: ([^\s]+)', research_result['output'])
-    logger.info(f"Found {len(urls)} URLs to evaluate")
+    print(f"\nFound {len(urls)} URLs to evaluate")
 
     # Phase 2: Critic
-    logger.info(f"{'='*60}\nPHASE 2: CRITIC\n{'='*60}")
+    print(f"\n{'='*60}\nPHASE 2: CRITIC\n{'='*60}")
     critic = create_critic_agent(model)
 
     # Scrape summaries for each URL
@@ -198,7 +196,7 @@ Find the most relevant and recent sources. Return the top 5 results with titles,
                     'title': result.get('title', 'N/A')
                 })
         except Exception as e:
-            logger.warning(f"Failed to scrape {url}: {e}")
+            print(f"Failed to scrape {url}: {e}")
 
     # Evaluate which page is best
     eval_prompt = f"""Query: {query}
@@ -220,10 +218,10 @@ Return ONLY the URL of the best page, or NONE if none are relevant."""
     if not best_url or best_url == "NONE":
         return "No relevant sources found for this query."
 
-    logger.info(f"Best source selected: {best_url}")
+    print(f"\nBest source selected: {best_url}")
 
     # Phase 3: Writer
-    logger.info(f"{'='*60}\nPHASE 3: WRITER\n{'='*60}")
+    print(f"\n{'='*60}\nPHASE 3: WRITER\n{'='*60}")
     writer = create_writer_agent(model)
 
     writer_prompt = f"""Write a comprehensive answer to: {query}
@@ -245,7 +243,7 @@ if __name__ == "__main__":
     query = "What are the major hardware breakthroughs in quantum computing for 2025?"
 
     result = asyncio.run(deep_research(query))
-    logger.info("=" * 60)
-    logger.info("FINAL REPORT")
-    logger.info("=" * 60)
-    logger.info(result)
+    print("\n" + "="*60)
+    print("FINAL REPORT")
+    print("="*60)
+    print(result)
