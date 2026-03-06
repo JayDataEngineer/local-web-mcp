@@ -1,0 +1,3 @@
+# Place local llms.txt files in this directory
+# These are for sites that don't have official llms.txt endpoints
+# Configure them in docs_config.yaml

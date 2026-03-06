@@ -194,25 +194,69 @@ mcp.http_app = http_app_with_middleware
 
 DOCS_CONFIG_PATH = os.getenv("DOCS_CONFIG_PATH", "/app/docs_config.yaml")
 DOCS_CACHE_TTL = int(os.getenv("DOCS_CACHE_TTL", SCRAPE_CACHE_TTL))  # 1 hour default
+DOCS_LOCAL_DIR = os.getenv("DOCS_LOCAL_DIR", "/app/docs_local")  # Directory for local llms.txt files
 
 
-def _load_docs_sources() -> dict:
-    """Load documentation sources from YAML config file."""
+def _is_http_or_https(url: str) -> bool:
+    """Check if the URL is an HTTP or HTTPS URL."""
+    return url.startswith(("http://", "https://"))
+
+
+def _normalize_path(path: str) -> str:
+    """Accept paths in file:/// or relative format and map to absolute paths."""
+    return (
+        os.path.abspath(path[7:])
+        if path.startswith("file://")
+        else os.path.abspath(path)
+    )
+
+
+def _load_docs_sources() -> tuple[dict, set]:
+    """Load documentation sources from YAML config file.
+
+    Returns:
+        Tuple of (name -> url mapping, set of allowed local file paths)
+    """
     import yaml
+    local_sources = []
+    remote_sources = []
+
     try:
         with open(DOCS_CONFIG_PATH, "r") as f:
             sources = yaml.safe_load(f) or []
-        # Convert list of dicts to name -> url mapping
-        return {
-            s.get("name", _extract_domain(s.get("llms_txt", ""))): s["llms_txt"]
-            for s in sources
-        }
+
+        for s in sources:
+            url_or_path = s.get("llms_txt", "")
+            if _is_http_or_https(url_or_path):
+                remote_sources.append(s)
+            else:
+                local_sources.append(s)
+
+        # Build name -> url mapping
+        mapping = {}
+        for s in remote_sources:
+            name = s.get("name", _extract_domain(s["llms_txt"]))
+            mapping[name] = s["llms_txt"]
+
+        # Build allowed local files set (for security)
+        allowed_local = set()
+        for s in local_sources:
+            path = _normalize_path(s["llms_txt"])
+            name = s.get("name", os.path.basename(path))
+            if not os.path.exists(path):
+                logger.warning(f"Local docs file not found: {path}")
+                continue
+            mapping[name] = f"file://{path}"
+            allowed_local.add(path)
+
+        return mapping, allowed_local
+
     except FileNotFoundError:
         logger.warning(f"Docs config not found: {DOCS_CONFIG_PATH}")
-        return {}
+        return {}, set()
     except Exception as e:
         logger.warning(f"Failed to load docs config: {e}")
-        return {}
+        return {}, set()
 
 
 def _extract_domain(url: str) -> str:
@@ -224,51 +268,108 @@ def _extract_domain(url: str) -> str:
 
 @mcp.tool()
 async def docs_list_sources(ctx: Context | None = None) -> str:
-    """List all available documentation sources (llms.txt endpoints)
+    """List all available documentation sources (llms.txt endpoints and local files)
 
     Returns:
-        Formatted list of documentation sources with their URLs
+        Formatted list of documentation sources with their URLs or file paths
     """
     if ctx:
         await ctx.debug("Loading documentation sources")
 
-    sources = _load_docs_sources()
+    sources, _ = _load_docs_sources()
     if not sources:
         return "No documentation sources configured."
 
     lines = []
-    for name, url in sources.items():
+    for name, url_or_path in sources.items():
         lines.append(f"{name}")
-        lines.append(f"  URL: {url}")
+        if url_or_path.startswith("file://"):
+            lines.append(f"  Path: {url_or_path[7:]}")  # Strip file:// prefix
+        else:
+            lines.append(f"  URL: {url_or_path}")
     return "\n".join(lines)
 
 
 @mcp.tool()
 async def docs_fetch_docs(
-    url: Annotated[str, Field(description="The documentation URL to fetch")],
+    url: Annotated[str, Field(description="The documentation URL or file path to fetch. Can be http://, https://, file://, or an absolute/relative path to a local file.")],
     use_cache: Annotated[bool, Field(description="Whether to use cached content if available")] = True,
     ctx: Context | None = None
 ) -> str:
-    """Fetch documentation from a URL and convert to clean Markdown
+    """Fetch documentation from a URL or local file and convert to clean Markdown
 
-    This tool fetches HTML documentation from the given URL and converts
-    it to clean Markdown using the same content cleaner as the scrape tool.
+    This tool fetches HTML or Markdown documentation from URLs or local files.
+    Remote URLs are fetched and cleaned. Local files must be configured in
+    docs_config.yaml for security.
 
     Args:
-        url: The documentation URL to fetch (must be a valid HTTP/HTTPS URL)
+        url: The documentation URL or file path to fetch. Supports:
+            - http:// or https:// URLs (any URL allowed)
+            - file:// URLs (must be in docs_config.yaml allowed list)
+            - Absolute or relative file paths (must be in docs_config.yaml allowed list)
         use_cache: Whether to use cached content if available (default: true)
 
     Returns:
-        Clean Markdown content from the documentation URL
+        Clean Markdown content from the documentation source
 
     Note:
         Results are cached for {DOCS_CACHE_TTL}s. Cached content returns
         instantly without re-fetching from the remote server.
     """
-    # Validate URL format
-    if not url.startswith(("http://", "https://")):
-        raise ToolError("URL must start with http:// or https://")
+    # Get allowed local files for security
+    _, allowed_local_files = _load_docs_sources()
+    url_or_path = url.strip()
 
+    # Handle local file paths
+    if not _is_http_or_https(url_or_path):
+        # Normalize the path (handles file:// and direct paths)
+        abs_path = _normalize_path(url_or_path)
+
+        # Security check: file must be in allowed list
+        if abs_path not in allowed_local_files:
+            raise ToolError(
+                f"Local file not allowed: {abs_path}. "
+                f"Allowed files are those listed in docs_config.yaml."
+            )
+
+        if ctx:
+            await ctx.info(f"Reading local file: {abs_path}")
+
+        try:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            # If it's already markdown, return as-is
+            if abs_path.endswith((".md", ".markdown", ".txt")):
+                markdown = content
+            # If it's HTML, clean it
+            elif abs_path.endswith((".html", ".htm")):
+                cleaner = ctx.lifespan_context.get("cleaner")
+                if not cleaner:
+                    raise ToolError("Content cleaner service not available")
+                markdown = cleaner.clean(content, url=url_or_path)
+            else:
+                # Try to detect - if it looks like HTML, clean it
+                if content.strip().startswith("<"):
+                    cleaner = ctx.lifespan_context.get("cleaner")
+                    if not cleaner:
+                        raise ToolError("Content cleaner service not available")
+                    markdown = cleaner.clean(content, url=url_or_path)
+                else:
+                    markdown = content
+
+            if ctx:
+                word_count = len(markdown.split())
+                await ctx.info(f"Read {word_count} words from local file")
+
+            return markdown
+
+        except FileNotFoundError:
+            raise ToolError(f"Local file not found: {abs_path}")
+        except Exception as e:
+            raise ToolError(f"Error reading local file: {str(e)}")
+
+    # Handle HTTP/HTTPS URLs
     if ctx:
         await ctx.info(f"Fetching documentation: {url}")
 

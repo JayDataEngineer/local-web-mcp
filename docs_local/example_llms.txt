@@ -1,0 +1,17 @@
+# Example Local llms.txt
+#
+# This is an example of a local llms.txt file for a site that doesn't
+# provide one officially. Add your own entries following the llms.txt spec:
+# https://llmstxt.org/
+#
+# To use this file:
+# 1. Uncomment the entry in docs_config.yaml that references this file
+# 2. Or add your own entry pointing to this or another local file
+
+## Example Documentation
+
+- [Getting Started Guide](https://example.com/docs/getting-started): Introduction to the project
+- [API Reference](https://example.com/docs/api): Complete API documentation
+- [Tutorials](https://example.com/docs/tutorials): Step-by-step tutorials
+
+# Add more sections and links as needed

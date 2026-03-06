@@ -1,6 +1,12 @@
-# Documentation sources for llms.txt integration
-# These will be exposed via mcpdoc with the "docs_" namespace prefix
-# Tools: docs_list_doc_sources, docs_fetch_docs
+# Documentation sources for MCP docs tools
+# Tools: docs_list_sources, docs_fetch_docs
+#
+# Remote sources (http:// or https://): Any URL is allowed
+# Local sources: Must be absolute paths or paths relative to /app/docs_local
+#   - Local files are checked for existence at startup
+#   - Only files listed here are accessible (security)
+
+# ========== REMOTE SOURCES ==========
 
 # Python Frameworks
 - name: LangGraph
@@ -9,7 +15,6 @@
 - name: LangChain
   llms_txt: https://python.langchain.com/llms.txt
 
-# Note: DeepAgents is a sub-library of LangChain
 - name: DeepAgents
   llms_txt: https://python.langchain.com/llms.txt
 
@@ -25,20 +30,28 @@
 - name: Docker
   llms_txt: https://docs.docker.com/llms.txt
 
-- name: FastMCP
-  llms_txt: https://gofastmcp.com/llms.txt
-
 - name: Next.js
   llms_txt: https://nextjs.org/llms.txt
 
 - name: Vercel AI
   llms_txt: https://ai-sdk.dev/llms.txt
 
-- name: Pydantic
+- name: Pydantic AI
   llms_txt: https://ai.pydantic.dev/llms.txt
 
+# ========== LOCAL SOURCES ==========
+# For sites that don't have llms.txt, create your own locally
+# Place files in /app/docs_local/ or use absolute paths
 
-# Add more as needed:
+# Example: Local llms.txt for a project without official docs
+# - name: MyProject
+#   llms_txt: /app/docs_local/myproject_llms.txt
+
+# Example: Using relative path (resolves against DOCS_LOCAL_DIR)
+# - name: LocalDocs
+#   llms_txt: local_llms.txt
+
+# ========== ADD MORE SOURCES AS NEEDED ==========
 # - name: Anthropic
 #   llms_txt: https://docs.anthropic.com/en/llms.txt
 # - name: SQLAlchemy

@@ -37,6 +37,7 @@ services:
       - mcp_net
     volumes:
       - ./docs_config.yaml:/app/docs_config.yaml:ro
+      - ./docs_local:/app/docs_local:ro
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
