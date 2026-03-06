@@ -1,39 +1,41 @@
 # Caddyfile for MCP Research Server
 # This configuration provides:
-# - HTTP on port 80 (for Tailscale IP access)
-# - HTTPS with automatic TLS (for MagicDNS access)
+# - HTTP on port 80 (fallback, for testing)
+# - HTTPS with automatic TLS via Tailscale MagicDNS
 
-# HTTP listener for Tailscale IP access
+# Get machine name and tailnet domain from environment
+# Full URL will be: {TAILNET_MACHINE_NAME}.{TAILNET_DOMAIN}
+{$TAILNET_MACHINE_NAME}: {
+    # Show admin page with configure button for Tailscale
+    @tailscale {
+        protocol tailscale
+    }
+    reverse_proxy @tailscale
+}
+
+# HTTP fallback (for testing without MagicDNS)
 :80 {
-    # Proxy to the MCP server running on localhost:8000
-    reverse_proxy localhost:8000
+    # Use Docker DNS - mcp-server is the container name on mcp_net
+    reverse_proxy mcp-server:8000
 
-    # Log to stdout
     log {
         output stdout
         format console
     }
 }
 
-# HTTPS listener for MagicDNS (uncomment and configure)
-# Replace mcp-server.your-tailnet.ts.net with your actual Tailscale MagicDNS hostname
-# https://mcp-server.your-tailnet.ts.net {
-#     reverse_proxy localhost:8000
-#
-#     # Tailscale provides automatic TLS certificates
-#     tls tailscale {
-#         dns ts.net
-#     }
-#
-#     log {
-#         output stdout
-#         format console
-#     }
-# }
+# HTTPS with Tailscale MagicDNS
+# Uses environment variables: TAILNET_MACHINE_NAME and TAILNET_DOMAIN
+https://{$TAILNET_MACHINE_NAME}.{$TAILNET_DOMAIN} {
+    reverse_proxy mcp-server:8000
 
-# Alternative: Use any hostname on port 443 with self-signed cert
-# Uncomment if you need HTTPS without MagicDNS
-# :443 {
-#     reverse_proxy localhost:8000
-#     tls internal
-# }
+    # Tailscale provides automatic TLS certificates via the shared socket
+    tls tailscale {
+        dns ts.net
+    }
+
+    log {
+        output stdout
+        format console
+    }
+}

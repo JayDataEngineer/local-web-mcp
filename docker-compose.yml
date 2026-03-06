@@ -11,6 +11,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      - TAILNET_DOMAIN=${TAILNET_DOMAIN:-your-tailnet.ts.net}
+      - TAILNET_MACHINE_NAME=${TAILNET_MACHINE_NAME:-mcp-server}
     networks:
       - mcp_net
     volumes:
