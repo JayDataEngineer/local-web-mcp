@@ -61,7 +61,7 @@ class UnifiedScrapeService:
         """Get cache service (lazy async initialization)"""
         if self._cache is None:
             from ..services.cache_service import get_cache_service
-            self._cache = get_cache_service()
+            self._cache = await get_cache_service()
         return self._cache
 
     @property

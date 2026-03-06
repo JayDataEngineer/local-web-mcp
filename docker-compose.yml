@@ -15,7 +15,8 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - MCP_PORT=${MCP_PORT:-8000}
-    command: python -m uvicorn src.main:app --host 0.0.0.0 --port ${MCP_PORT:-8000}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+    command: python -m src.mcp_sse
     depends_on:
       - postgres
       - searxng
