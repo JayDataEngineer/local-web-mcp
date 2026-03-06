@@ -16,12 +16,18 @@ Documentation (via mcpdoc, namespaced as "docs_"):
 
 from __future__ import annotations
 
+from typing import Annotated, Literal
+from urllib.parse import urlparse
+
 from fastmcp import FastMCP, Context
 from fastmcp.server.lifespan import lifespan
 from fastmcp.server.middleware.caching import ResponseCachingMiddleware
+from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
+from fastmcp.exceptions import ToolError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from loguru import logger
+from pydantic import Field, HttpUrl, ValidationError
 import os
 
 
@@ -121,7 +127,14 @@ mcp = FastMCP(
     ),
     lifespan=service_lifespan,
     session_state_store=redis_store,
+    mask_error_details=True,  # Hide internal errors from clients for security
 )
+
+# Add middleware in order: error handling first, then caching
+mcp.add_middleware(ErrorHandlingMiddleware(
+    include_traceback=True,  # Log full tracebacks server-side
+    transform_errors=True,    # Convert exceptions to MCP errors
+))
 
 # Add response caching middleware with Redis backend
 if redis_store:
@@ -232,8 +245,8 @@ async def docs_list_sources(ctx: Context | None = None) -> str:
 
 @mcp.tool()
 async def docs_fetch_docs(
-    url: str,
-    use_cache: bool = True,
+    url: Annotated[str, Field(description="The documentation URL to fetch")],
+    use_cache: Annotated[bool, Field(description="Whether to use cached content if available")] = True,
     ctx: Context | None = None
 ) -> str:
     """Fetch documentation from a URL and convert to clean Markdown
@@ -242,7 +255,7 @@ async def docs_fetch_docs(
     it to clean Markdown using the same content cleaner as the scrape tool.
 
     Args:
-        url: The documentation URL to fetch
+        url: The documentation URL to fetch (must be a valid HTTP/HTTPS URL)
         use_cache: Whether to use cached content if available (default: true)
 
     Returns:
@@ -252,12 +265,19 @@ async def docs_fetch_docs(
         Results are cached for {DOCS_CACHE_TTL}s. Cached content returns
         instantly without re-fetching from the remote server.
     """
+    # Validate URL format
+    if not url.startswith(("http://", "https://")):
+        raise ToolError("URL must start with http:// or https://")
+
     if ctx:
         await ctx.info(f"Fetching documentation: {url}")
 
-    # Get services from lifespan context
-    cleaner = ctx.lifespan_context["cleaner"]
+    # Get services from lifespan context with safe access
+    cleaner = ctx.lifespan_context.get("cleaner")
     cache = ctx.lifespan_context.get("cache")
+
+    if not cleaner:
+        raise ToolError("Content cleaner service not available")
 
     # Check cache first
     if use_cache and cache:
@@ -265,12 +285,10 @@ async def docs_fetch_docs(
         if cached:
             if ctx:
                 await ctx.debug("Returning cached documentation")
-            cached["cached"] = True
             return cached.get("content", "Error: cached content invalid")
 
     # Fetch the documentation
     import httpx
-    from urllib.parse import urlparse
 
     try:
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
@@ -285,7 +303,7 @@ async def docs_fetch_docs(
         markdown = cleaner.clean(html, url=url)
 
         if not markdown:
-            return f"Error: No content could be extracted from {url}"
+            raise ToolError(f"No content could be extracted from {url}")
 
         # Cache the result
         if use_cache and cache:
@@ -302,36 +320,52 @@ async def docs_fetch_docs(
         return markdown
 
     except httpx.HTTPStatusError as e:
-        error = f"HTTP {e.response.status_code} error fetching {url}"
-        if ctx:
-            await ctx.error(error)
-        return f"Error: {error}"
+        status = e.response.status_code
+        if status == 404:
+            raise ToolError(f"Documentation not found (404) at {url}")
+        elif status == 403:
+            raise ToolError(f"Access denied (403) when fetching {url}")
+        elif status >= 500:
+            raise ToolError(f"Server error ({status}) when fetching {url}")
+        else:
+            raise ToolError(f"HTTP error {status} when fetching {url}")
+    except httpx.TimeoutException:
+        raise ToolError(f"Request timed out when fetching {url}")
+    except httpx.ConnectError:
+        raise ToolError(f"Could not connect to {url} - the server may be down")
     except httpx.RequestError as e:
-        error = f"Network error fetching {url}: {e}"
-        if ctx:
-            await ctx.error(error)
-        return f"Error: {error}"
+        raise ToolError(f"Network error fetching {url}: {str(e)}")
+    except ToolError:
+        raise  # Re-raise ToolError as-is (user-facing message)
     except Exception as e:
-        error = f"Unexpected error fetching {url}: {e}"
-        if ctx:
-            await ctx.error(error)
-        return f"Error: {error}"
+        logger.error(f"Unexpected error fetching {url}: {e}")
+        raise ToolError(f"Unexpected error when processing {url}")
 
 
 # ========== MCP TOOLS ==========
 
 @mcp.tool()
 async def search_web(
-    query: str,
-    pages: int = 10,
-    exclude_blacklist: bool = True,
+    query: Annotated[str, Field(
+        description="Search query string",
+        min_length=1,
+        max_length=500
+    )],
+    pages: Annotated[int, Field(
+        description="Number of search result pages to fetch (1-10)",
+        ge=1,
+        le=10
+    )] = 10,
+    exclude_blacklist: Annotated[bool, Field(
+        description="Exclude blacklisted domains from results"
+    )] = True,
     ctx: Context | None = None
 ) -> dict:
     """Search the web using multiple search engines
 
     Args:
-        query: Search query string
-        pages: Number of search result pages to fetch (1-10)
+        query: Search query string (1-500 characters)
+        pages: Number of search result pages to fetch, 1-10 (default: 10)
         exclude_blacklist: Exclude blacklisted domains from results
 
     Returns:
@@ -344,8 +378,10 @@ async def search_web(
     if ctx:
         await ctx.info(f"Searching for: {query}")
 
-    # Get services from lifespan context
-    search_svc = ctx.lifespan_context["search_service"]
+    # Get services from lifespan context with safe access
+    search_svc = ctx.lifespan_context.get("search_service")
+    if not search_svc:
+        raise ToolError("Search service not available")
 
     result = await search_svc.search(
         query=query,
@@ -374,9 +410,13 @@ async def search_web(
 
 @mcp.tool()
 async def scrape_url(
-    url: str,
-    method: str | None = None,
-    css_selector: str | None = None,
+    url: Annotated[str, Field(description="URL to scrape")],
+    method: Annotated[Literal["crawl4ai", "selenium", "pdf"] | None, Field(
+        description="Force specific scraping method"
+    )] = None,
+    css_selector: Annotated[str | None, Field(
+        description="Optional CSS selector for targeted content extraction"
+    )] = None,
     ctx: Context | None = None
 ) -> dict:
     """Scrape a URL and extract clean markdown content
@@ -385,7 +425,7 @@ async def scrape_url(
     automatically uses it on future requests.
 
     Args:
-        url: URL to scrape
+        url: URL to scrape (must be a valid HTTP/HTTPS URL)
         method: Force specific scraping method (crawl4ai, selenium, pdf)
         css_selector: Optional CSS selector for targeted content extraction
 
@@ -396,19 +436,29 @@ async def scrape_url(
         Results are cached for {SCRAPE_CACHE_TTL}s. Cached scrapes return
         instantly without re-downloading the page.
     """
+    # Validate URL
+    if not url.startswith(("http://", "https://", "file://")):
+        raise ToolError("URL must start with http://, https://, or file://")
+
     if ctx:
         await ctx.info(f"Scraping: {url}")
 
     from .models.unified import ScrapeRequest, ScrapingMethod
 
-    # Get services from lifespan context
-    scrape_svc = ctx.lifespan_context["scrape_service"]
+    # Get services from lifespan context with safe access
+    scrape_svc = ctx.lifespan_context.get("scrape_service")
+    if not scrape_svc:
+        raise ToolError("Scrape service not available")
 
-    request = ScrapeRequest(
-        url=url,
-        force_method=ScrapingMethod(method) if method else None,
-        css_selector=css_selector
-    )
+    try:
+        request = ScrapeRequest(
+            url=url,
+            force_method=ScrapingMethod(method) if method else None,
+            css_selector=css_selector
+        )
+    except ValueError as e:
+        raise ToolError(f"Invalid scraping method: {e}")
+
     result = await scrape_svc.scrape(request)
 
     response = {
@@ -424,6 +474,8 @@ async def scrape_url(
         response["error"] = result.error
         if ctx:
             await ctx.error(f"Scrape failed: {result.error}")
+        # Don't raise ToolError here - the result indicates success=False
+        # The LLM can see the error field and decide what to do
 
     return response
 
@@ -441,8 +493,11 @@ async def get_domains(ctx: Context | None = None) -> dict:
     if ctx:
         await ctx.debug("Fetching all tracked domains")
 
-    # Get database from lifespan context
-    db = ctx.lifespan_context["db"]
+    # Get database from lifespan context with safe access
+    db = ctx.lifespan_context.get("db")
+    if not db:
+        raise ToolError("Database service not available")
+
     domains = await db.get_all_domains()
 
     if ctx:
@@ -468,8 +523,11 @@ async def clean_database(ctx: Context | None = None) -> dict:
         This operation cannot be undone. All learned domain preferences
         will be lost and must be re-learned through scraping.
     """
-    # Get database from lifespan context
-    db = ctx.lifespan_context["db"]
+    # Get database from lifespan context with safe access
+    db = ctx.lifespan_context.get("db")
+    if not db:
+        raise ToolError("Database service not available")
+
     count = await db.clean()
 
     if ctx:
