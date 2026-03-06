@@ -10,10 +10,11 @@ FastMCP-based research server with MCP (Model Context Protocol) support for unif
 - **Smart Scraping**: Crawl4AI (fast) → SeleniumBase (stealth fallback) → Blacklist
 - **PDF Support**: Download and extract text from PDF files using PyMuPDF
 - **Domain Rate Limiting**: Redis-backed concurrent request limiting
-- **Clean Output**: Trafilatura + Readability for LLM-ready markdown
+- **Clean Output**: ContentCleaner with priority extraction for LLM-ready markdown
 - **Domain Learning**: PostgreSQL tracks which method works per domain
-- **Documentation Tools**: Built-in llms.txt support (LangChain, FastAPI, Pydantic, etc.)
-- **Redis Caching**: Cached search and scrape results
+- **Documentation Tools**: Native FastMCP tools for fetching any URL as clean Markdown
+- **Redis Caching**: ResponseCachingMiddleware for search, scrape, and docs
+- **Error Handling**: Input validation, ToolError exceptions, masked internal errors
 - **Caddy Reverse Proxy**: Professional deployment with automatic TLS
 
 ## Architecture
@@ -34,9 +35,9 @@ FastMCP-based research server with MCP (Model Context Protocol) support for unif
                     │  │ • clean_database               │   │
                     │  └────────────────────────────────┘   │
                     │  ┌────────────────────────────────┐   │
-                    │  │ Docs (mcpdoc, namespace: docs_) │   │
-                    │  │ • list_doc_sources             │   │
-                    │  │ • fetch_docs                   │   │
+                    │  │ Docs (native, namespace: docs_) │   │
+                    │  │ • docs_list_sources            │   │
+                    │  │ • docs_fetch_docs              │   │
                     │  └────────────────────────────────┘   │
                     └──────────────┬──────────────────────────┘
                                    │
@@ -142,8 +143,8 @@ Any MCP-compatible client can connect via SSE transport to your Tailscale HTTPS 
 
 | Tool | Description |
 |------|-------------|
-| `docs_list_doc_sources` | List available documentation libraries |
-| `docs_fetch_docs` | Fetch documentation from llms.txt sources |
+| `docs_list_sources` | List available documentation libraries |
+| `docs_fetch_docs` | Fetch documentation from any URL (cached, cleaned to Markdown) |
 
 ---
 
@@ -189,6 +190,11 @@ CELERY_RESULT_BACKEND=redis://redis:6379/0
 # API
 MCP_PORT=8000
 ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
+
+# Caching (seconds)
+SEARCH_CACHE_TTL=300
+SCRAPE_CACHE_TTL=3600
+DOCS_CACHE_TTL=3600
 ```
 
 ---
@@ -205,7 +211,44 @@ ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
 7. Try Crawl4AI (fast, JS-enabled)
 8. If failed → Try Selenium (stealth mode)
 9. If both failed → Blacklist domain
+10. Clean HTML → ContentCleaner with priority extraction
 ```
+
+**Content Extraction Priority:**
+1. CSS selector (if provided)
+2. Readability (Mozilla's article extractor)
+3. Trafilatura (news/blog optimized)
+4. Selectolax (fast `<main>/<article>` finder)
+5. BeautifulSoup (nuclear option)
+
+---
+
+## Error Handling
+
+The server implements FastMCP-compliant error handling:
+
+- **Input Validation**: All parameters use `Annotated[Field]` with constraints
+  - `min_length`/`max_length` for strings
+  - `ge`/`le` for numeric ranges
+  - `Literal` for enum choices
+- **User-Facing Errors**: `ToolError` for client-visible messages
+- **Internal Errors**: Masked from clients (security), logged server-side
+- **HTTP-Specific Messages**: 404, 403, 500 errors return helpful context
+
+---
+
+## Caching
+
+Redis-backed caching with configurable TTL:
+
+```bash
+# Cache TTL (seconds)
+SEARCH_CACHE_TTL=300      # 5 minutes for search results
+SCRAPE_CACHE_TTL=3600     # 1 hour for scraped content
+DOCS_CACHE_TTL=3600       # 1 hour for documentation
+```
+
+Cached responses include metadata (method used, timestamp) and bypass expensive operations.
 
 ---
 
@@ -215,9 +258,13 @@ The server includes official documentation for:
 
 - **LangGraph** - Agent framework
 - **LangChain** - LLM framework
+- **DeepAgents** - LangChain agent patterns
 - **FastAPI** - Web framework
 - **Pydantic** - Data validation
 - **FastMCP** - MCP framework
+- **Docker** - Container platform
+- **Next.js** - React framework
+- **Vercel AI** - AI SDK for React
 
 Add more in `docs_config.yaml`.
 
@@ -225,11 +272,12 @@ Add more in `docs_config.yaml`.
 
 ## Tech Stack
 
-- **FastMCP** - MCP server framework
+- **FastMCP** - MCP server framework with SSE transport
 - **Caddy** - Reverse proxy with automatic TLS
-- **PostgreSQL** - Domain tracking
-- **Celery + Redis** - Task queue
+- **PostgreSQL** - Domain tracking and learning
+- **Celery + Redis** - Task queue and rate limiting
 - **SearXNG** - Multi-engine search
 - **Crawl4AI** - Fast JS-enabled scraping
 - **SeleniumBase** - Stealth scraping fallback
+- **ContentCleaner** - Multi-strategy HTML→Markdown conversion
 - **Tailscale** - VPN + MagicDNS
