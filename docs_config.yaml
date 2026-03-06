@@ -1,0 +1,27 @@
+# Documentation sources for llms.txt integration
+# These will be exposed via mcpdoc with the "docs_" namespace prefix
+# Tools: docs_list_doc_sources, docs_fetch_docs
+
+# Python Frameworks
+- name: LangGraph
+  llms_txt: https://langchain-ai.github.io/langgraph/llms.txt
+
+- name: LangChain
+  llms_txt: https://python.langchain.com/llms.txt
+
+- name: FastAPI
+  llms_txt: https://fastapi.tiangolo.com/llms.txt
+
+- name: Pydantic
+  llms_txt: https://docs.pydantic.dev/llms.txt
+
+- name: FastMCP
+  llms_txt: https://gofastmcp.com/llms.txt
+
+# Add more as needed:
+# - name: Anthropic
+#   llms_txt: https://docs.anthropic.com/en/llms.txt
+# - name: SQLAlchemy
+#   llms_txt: https://docs.sqlalchemy.org/llms.txt
+# - name: Celery
+#   llms_txt: https://docs.celeryq.dev/en/stable/llms.txt

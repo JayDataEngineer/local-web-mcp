@@ -21,6 +21,8 @@ services:
     container_name: mcp-server
     ports:
       - "127.0.0.1:${MCP_PORT:-8000}:${MCP_PORT:-8000}"
+    volumes:
+      - ./docs_config.yaml:/app/docs_config.yaml:ro
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432

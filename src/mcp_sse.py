@@ -8,24 +8,60 @@ Tools:
 - scrape_url: Scrape URL with automatic method selection
 - get_domains: List tracked domains with preferred methods
 - clean_database: Clear all domain tracking data
+
+Documentation (via mcpdoc, namespaced as "docs_"):
+- docs_list_doc_sources: List available documentation libraries
+- docs_fetch_docs: Fetch documentation from llms.txt sources
 """
 
 from __future__ import annotations
 
 from fastmcp import FastMCP, Context
 from fastmcp.server.lifespan import lifespan
+from fastmcp.server.middleware.caching import ResponseCachingMiddleware
+from fastmcp.server import create_proxy
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from loguru import logger
 import os
 
 
-# Configure CORS from environment
+# ========== CONFIGURATION ==========
+
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
     if origin.strip()
 ]
+
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
+
+# Cache TTL: 5 minutes for search results, 1 hour for scraped content
+SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", 300))
+SCRAPE_CACHE_TTL = int(os.getenv("SCRAPE_CACHE_TTL", 3600))
+
+
+# ========== REDIS STORE SETUP ==========
+
+def _create_redis_store():
+    """Create namespaced Redis store for FastMCP state and caching"""
+    from key_value.aio.stores.redis import RedisStore
+    from key_value.aio.wrappers.prefix_collections import PrefixCollectionsWrapper
+
+    base_store = RedisStore(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        password=REDIS_PASSWORD,
+        db=0,  # Use database 0 for FastMCP state
+    )
+
+    # Namespace to avoid conflicts with other apps using same Redis
+    return PrefixCollectionsWrapper(
+        key_value=base_store,
+        prefix="mcp-server"
+    )
 
 
 # ========== LIFESPAN ==========
@@ -46,7 +82,6 @@ async def service_lifespan(server: FastMCP):
     db = Database()
     await db.init()
 
-    # Yield lifespan context - accessible from tools via ctx.lifespan_context
     try:
         yield {
             "search_service": search_service,
@@ -63,6 +98,15 @@ async def service_lifespan(server: FastMCP):
 
 # ========== FASTMCP SERVER ==========
 
+# Create Redis store for session state and caching
+redis_store = None
+try:
+    redis_store = _create_redis_store()
+except ImportError:
+    logger.warning("py-key-value-aio[redis] not available, using in-memory session state")
+except Exception as e:
+    logger.warning(f"Failed to initialize Redis store: {e}")
+
 mcp = FastMCP(
     name="mcp-research-server",
     instructions=(
@@ -70,8 +114,21 @@ mcp = FastMCP(
         "Use search_web to find information and scrape_url to extract content from pages. "
         "The server learns which scraping method works best for each domain."
     ),
-    lifespan=service_lifespan
+    lifespan=service_lifespan,
+    session_state_store=redis_store,
 )
+
+# Add response caching middleware with Redis backend
+if redis_store:
+    try:
+        mcp.add_middleware(ResponseCachingMiddleware(
+            cache_storage=redis_store,
+            call_tool_settings={"enabled": True, "ttl": SCRAPE_CACHE_TTL},
+            list_tools_settings={"enabled": True, "ttl": SEARCH_CACHE_TTL},
+        ))
+        logger.info(f"Response caching enabled (tools: {SCRAPE_CACHE_TTL}s, list: {SEARCH_CACHE_TTL}s)")
+    except Exception as e:
+        logger.warning(f"Failed to add caching middleware: {e}")
 
 
 # ========== CORS & HEALTH CHECK ==========
@@ -115,6 +172,30 @@ def http_app_with_middleware(**kwargs):
 mcp.http_app = http_app_with_middleware
 
 
+# ========== DOCUMENTATION MOUNT (mcpdoc) ==========
+
+# Mount mcpdoc as a persistent stdio subprocess
+# This spawns mcpdoc ONCE per client session, not per tool call
+# Tools will be namespaced as "docs_list_doc_sources", "docs_fetch_docs"
+DOCS_CONFIG_PATH = os.getenv("DOCS_CONFIG_PATH", "/app/docs_config.yaml")
+
+try:
+    mcp.mount(
+        create_proxy({
+            "mcpServers": {
+                "default": {
+                    "command": "mcpdoc",  # Direct executable (installed in image)
+                    "args": ["--yaml", DOCS_CONFIG_PATH]
+                }
+            }
+        }),
+        namespace="docs"  # Prefixes all mcpdoc tools with "docs_"
+    )
+    logger.info(f"Documentation mounted from: {DOCS_CONFIG_PATH}")
+except Exception as e:
+    logger.warning(f"Failed to mount mcpdoc: {e}")
+
+
 # ========== MCP TOOLS ==========
 
 @mcp.tool()
@@ -133,6 +214,10 @@ async def search_web(
 
     Returns:
         Dictionary with query, total_results, and list of results
+
+    Note:
+        Results are cached for {SEARCH_CACHE_TTL}s. Cached results will return
+        instantly without re-querying search engines.
     """
     if ctx:
         await ctx.info(f"Searching for: {query}")
@@ -148,6 +233,8 @@ async def search_web(
 
     if ctx:
         await ctx.info(f"Found {result.total_results} results")
+        if result.cached:
+            await ctx.debug("Returned cached results")
 
     return {
         "query": query,
@@ -182,6 +269,10 @@ async def scrape_url(
 
     Returns:
         Dictionary with success status, title, content, and metadata
+
+    Note:
+        Results are cached for {SCRAPE_CACHE_TTL}s. Cached scrapes return
+        instantly without re-downloading the page.
     """
     if ctx:
         await ctx.info(f"Scraping: {url}")
@@ -221,6 +312,9 @@ async def get_domains(ctx: Context | None = None) -> dict:
 
     Returns:
         Dictionary with total count and list of domain records
+
+    Note:
+        This data is managed in PostgreSQL and is not cached.
     """
     if ctx:
         await ctx.debug("Fetching all tracked domains")
@@ -247,6 +341,10 @@ async def clean_database(ctx: Context | None = None) -> dict:
 
     Returns:
         Dictionary with status and count of removed records
+
+    Warning:
+        This operation cannot be undone. All learned domain preferences
+        will be lost and must be re-learned through scraping.
     """
     # Get database from lifespan context
     db = ctx.lifespan_context["db"]
@@ -271,6 +369,9 @@ if __name__ == "__main__":
     logger.info(f"Direct access: http://localhost:{port}/sse")
     logger.info(f"Via Caddy+Tailscale: http://<your-tailscale-ip>/sse")
     logger.info(f"Via MagicDNS+Caddy: https://<hostname>.<tailnet>.ts.net/sse")
-    logger.info(f"MCP tools: search_web, scrape_url, get_domains, clean_database")
+    logger.info(f"Session state: Redis @ {REDIS_HOST}:{REDIS_PORT}")
+    logger.info(f"Caching: enabled (search: {SEARCH_CACHE_TTL}s, scrape: {SCRAPE_CACHE_TTL}s)")
+    logger.info(f"Web tools: search_web, scrape_url, get_domains, clean_database")
+    logger.info(f"Docs tools (namespace: docs_): list_doc_sources, fetch_docs")
 
     mcp.run(transport="sse", host=host, port=port)
