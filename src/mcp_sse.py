@@ -268,10 +268,20 @@ def _extract_domain(url: str) -> str:
 
 @mcp.tool()
 async def docs_list_sources(ctx: Context | None = None) -> str:
-    """List all available documentation sources (llms.txt endpoints and local files)
+    """List all available documentation libraries and their llms.txt URLs.
+
+    START HERE to discover which documentation libraries are available.
+    This returns a list of llms.txt endpoints that act as indexes to
+    documentation content.
+
+    WORKFLOW:
+    1. Call this tool first to get available libraries
+    2. Call docs_fetch_docs() with a library's llms.txt URL
+    3. Read the returned index to find specific documentation URLs
+    4. Call docs_fetch_docs() again with those specific URLs to get actual content
 
     Returns:
-        Formatted list of documentation sources with their URLs or file paths
+        Formatted list of documentation sources with their URLs
     """
     if ctx:
         await ctx.debug("Loading documentation sources")
@@ -292,21 +302,33 @@ async def docs_list_sources(ctx: Context | None = None) -> str:
 
 @mcp.tool()
 async def docs_fetch_docs(
-    url: Annotated[str, Field(description="The documentation URL or file path to fetch. Can be http://, https://, file://, or an absolute/relative path to a local file.")],
+    url: Annotated[str, Field(description="The documentation URL to fetch. Use URLs from docs_list_sources or links found in llms.txt files.")],
     use_cache: Annotated[bool, Field(description="Whether to use cached content if available")] = True,
     ctx: Context | None = None
 ) -> str:
-    """Fetch documentation from a URL or local file and convert to clean Markdown
+    """Fetch documentation from a URL and convert to clean Markdown.
 
-    This tool fetches HTML or Markdown documentation from URLs or local files.
-    Remote URLs are fetched and cleaned. Local files must be configured in
-    docs_config.yaml for security.
+    CRITICAL WORKFLOW - This is a TWO-STEP process:
+
+    1. FIRST CALL: Fetch the llms.txt URL (from docs_list_sources). This returns
+       an INDEX of markdown links, not the actual documentation.
+
+    2. READ THE INDEX: The returned markdown contains links like:
+       - [Introduction](https://docs.example.com/intro)
+       - [API Reference](https://docs.example.com/api)
+
+    3. SECOND CALL: Call this tool AGAIN with the specific documentation URL
+       (e.g., https://docs.example.com/intro) to get the actual content.
+
+    If you only call this tool once with an llms.txt URL, you will NOT have
+    the actual documentation - just a list of links. You MUST call it again
+    with the specific page URLs.
 
     Args:
-        url: The documentation URL or file path to fetch. Supports:
-            - http:// or https:// URLs (any URL allowed)
-            - file:// URLs (must be in docs_config.yaml allowed list)
-            - Absolute or relative file paths (must be in docs_config.yaml allowed list)
+        url: The documentation URL to fetch. Can be:
+            - llms.txt URL (returns index of links)
+            - Specific documentation page URL (returns actual content)
+            - Local file path (must be configured in docs_config.yaml)
         use_cache: Whether to use cached content if available (default: true)
 
     Returns:
