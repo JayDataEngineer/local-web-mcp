@@ -187,17 +187,8 @@ services:
     volumes:
       - ts-data:/var/lib/tailscale
     restart: unless-stopped
-    # Run funnel in background, then keep tailscaled running
-    entrypoint:
-      - sh
-      - -c
-      - |
-        tailscale up
-        sleep 5
-        tailscale funnel 8000 localhost &
-        exec tailscaled
     healthcheck:
-      test: ["CMD", "tailscale", "status"]
+      test: ["CMD", "sh", "-c", "tailscale status || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
