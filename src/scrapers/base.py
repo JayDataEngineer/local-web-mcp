@@ -9,6 +9,8 @@ from ..core.constants import (
     SELENIUM_PAGE_LOAD_WAIT_SECONDS,
     MIN_CONTENT_LENGTH,
     DEFAULT_HEADERS,
+    CRAWL4AI_RETRY_COUNT,
+    SELENIUM_RETRY_COUNT,
 )
 from ..utils import extract_domain
 
@@ -289,11 +291,13 @@ async def scrape_with_fallback(
     1. Check if PDF → Use PDF scraper
     2. Check blacklist
     3. Reddit? → JSON API
-    4. Force method? → Use it
-    5. DB prefers selenium? → Try selenium first
-    6. Try Crawl4AI
-    7. Try Selenium (if Crawl4AI failed)
-    8. If both fail: record failure (blacklist after 3 failures)
+    4. Force method? → Use it directly (no retries)
+    5. DB prefers selenium? → Start with Selenium retries (3x)
+    6. Try Crawl4AI with retries (3x)
+    7. If Crawl4AI exhausted → Try Selenium with retries (3x)
+    8. If all attempts fail: record failure (blacklist after 3 total failures)
+
+    Retry logic prevents false "selenium-only" marking from temporary issues.
 
     Args:
         url: URL to scrape
@@ -331,41 +335,61 @@ async def scrape_with_fallback(
             await db.record_success(domain, "reddit_api")
         return result
 
-    # Force method?
+    # Force method? → Use it directly without retries
     if force_method:
         return await _scrape_with_method(url, force_method, cleaner, css_selector)
 
     # Check database for preferred method
     preferred = await db.get_domain_method(domain)
 
+    # ========== RETRY LOGIC ==========
+    # 1. If selenium-only preferred, try Selenium first (3x)
+    # 2. Always try Crawl4AI (3x) - this prevents false "selenium-only" marks
+    # 3. If Crawl4AI fails, mark selenium-only and try Selenium (3x)
+
+    selenium_tried_first = False
+
+    # If domain is already selenium-only, start with Selenium retries
     if preferred == "selenium":
-        logger.info(f"Database says use Selenium for {domain}")
-        result = await scrape_selenium(url, cleaner, css_selector)
+        logger.info(f"Database prefers Selenium for {domain}, starting with Selenium retries")
+        selenium_tried_first = True
+        for attempt in range(1, SELENIUM_RETRY_COUNT + 1):
+            logger.info(f"Selenium attempt {attempt}/{SELENIUM_RETRY_COUNT} for {url}")
+            result = await scrape_selenium(url, cleaner, css_selector)
+            if result["success"]:
+                await db.record_success(domain, "selenium")
+                return result
+            logger.warning(f"Selenium attempt {attempt} failed for {url}")
+        # All Selenium attempts failed - continue to try Crawl4AI
+        logger.warning(f"All Selenium attempts failed for {domain}, trying Crawl4AI as fallback")
+
+    # Try Crawl4AI with retries (always try unless already succeeded)
+    for attempt in range(1, CRAWL4AI_RETRY_COUNT + 1):
+        logger.info(f"Crawl4AI attempt {attempt}/{CRAWL4AI_RETRY_COUNT} for {url}")
+        result = await scrape_crawl4ai(url, cleaner, css_selector)
         if result["success"]:
-            await db.record_success(domain, "selenium")
+            await db.record_success(domain, "crawl4ai")
             return result
-        # If failed, continue to try other methods
+        logger.warning(f"Crawl4AI attempt {attempt} failed for {url}")
 
-    # Try Crawl4AI first (fast)
-    result = await scrape_crawl4ai(url, cleaner, css_selector)
-    if result["success"]:
-        await db.record_success(domain, "crawl4ai")
-        return result
-
-    # Crawl4AI failed - mark for selenium and try
-    logger.warning(f"Crawl4AI failed for {domain}, trying Selenium")
+    # Crawl4AI exhausted - mark domain for Selenium and try Selenium
+    logger.warning(f"All Crawl4AI attempts failed for {domain}, trying Selenium")
     await db.set_selenium_only(domain)
 
-    result = await scrape_selenium(url, cleaner, css_selector)
-    if result["success"]:
-        await db.record_success(domain, "selenium")
-        return result
+    # Try Selenium with retries (skip if we already tried it first and it failed)
+    if not selenium_tried_first:
+        for attempt in range(1, SELENIUM_RETRY_COUNT + 1):
+            logger.info(f"Selenium attempt {attempt}/{SELENIUM_RETRY_COUNT} for {url}")
+            result = await scrape_selenium(url, cleaner, css_selector)
+            if result["success"]:
+                await db.record_success(domain, "selenium")
+                return result
+            logger.warning(f"Selenium attempt {attempt} failed for {url}")
 
-    # Everything failed - record failure (may blacklist after threshold)
-    logger.error(f"All scraping methods failed for {domain}")
-    failure_result = await db.record_failure(domain, "both_failed")
+    # All attempts failed - record failure
+    logger.error(f"All scraping attempts failed for {domain} (3x Crawl4AI + 3x Selenium)")
+    await db.record_failure(domain, "all_methods_failed")
 
-    # Return simple error - failure count is internal detail
     return build_scrape_response(
         success=False,
         url=url,

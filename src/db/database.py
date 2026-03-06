@@ -178,7 +178,7 @@ class Database:
         Returns:
             Dict with 'blacklisted' bool and 'failure_count' int
         """
-        from .core.constants import BLACKLIST_FAILURE_THRESHOLD
+        from ..core.constants import BLACKLIST_FAILURE_THRESHOLD
 
         async with self._get_session() as session:
             result = await session.execute(

@@ -24,6 +24,10 @@ RATE_LIMIT_TTL = 300
 # Blacklist threshold
 BLACKLIST_FAILURE_THRESHOLD = 3
 
+# Retry counts before switching methods
+CRAWL4AI_RETRY_COUNT = 3
+SELENIUM_RETRY_COUNT = 3
+
 # Search configuration
 DEFAULT_SEARCH_ENGINES = ["brave", "bing", "duckduckgo", "ask"]
 MAX_SEARCH_PAGES = 10
