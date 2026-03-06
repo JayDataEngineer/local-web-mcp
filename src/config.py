@@ -2,15 +2,12 @@
 
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from dotenv import load_dotenv
 
 from .constants import (
     BLACKLIST_FAILURE_THRESHOLD,
     DEFAULT_SEARCH_ENGINES,
     CELERY_WORKER_CONCURRENCY,
 )
-
-load_dotenv()
 
 
 class Settings(BaseSettings):
