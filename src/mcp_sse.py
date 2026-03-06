@@ -162,13 +162,27 @@ async def search_web(
     """
     _ensure_services()
     if ctx:
-        await ctx.info(f"Searching for: {query}")
+        await ctx.info(
+            f"Searching for: {query}",
+            extra={"query": query, "pages": pages, "exclude_blacklist": exclude_blacklist}
+        )
 
     result = await _search_service.search(
         query=query,
         pages=pages,
         exclude_blacklist=exclude_blacklist
     )
+
+    if ctx:
+        await ctx.info(
+            f"Found {result.total_results} results",
+            extra={
+                "total_results": result.total_results,
+                "pages_scraped": result.pages_scraped,
+                "search_time_ms": result.search_time_ms,
+                "cached": result.cached
+            }
+        )
 
     return {
         "query": query,
@@ -206,7 +220,10 @@ async def scrape_url(
     """
     _ensure_services()
     if ctx:
-        await ctx.info(f"Scraping: {url}")
+        await ctx.info(
+            f"Scraping: {url}",
+            extra={"url": url, "method": method, "css_selector": bool(css_selector)}
+        )
 
     from .models.unified import ScrapeRequest, ScrapingMethod
 
@@ -229,7 +246,10 @@ async def scrape_url(
     if not result.success and result.error:
         response["error"] = result.error
         if ctx:
-            await ctx.warning(f"Scrape failed: {result.error}")
+            await ctx.error(
+                f"Scrape failed: {result.error}",
+                extra={"url": url, "error": result.error}
+            )
 
     return response
 
@@ -241,8 +261,15 @@ async def get_domains(ctx: Context | None = None) -> dict:
     Returns:
         Dictionary with total count and list of domain records
     """
+    if ctx:
+        await ctx.debug("Fetching all tracked domains")
+
     db = await _get_db()
     domains = await db.get_all_domains()
+
+    if ctx:
+        await ctx.debug(f"Retrieved {len(domains)} domains")
+
     return {
         "total": len(domains),
         "domains": domains
@@ -262,7 +289,10 @@ async def clean_database(ctx: Context | None = None) -> dict:
     db = await _get_db()
     count = await db.clean()
     if ctx:
-        await ctx.info(f"Cleaned {count} domain records")
+        await ctx.info(
+            f"Cleaned {count} domain records",
+            extra={"records_removed": count}
+        )
     return {
         "status": "success",
         "records_removed": count
