@@ -137,6 +137,7 @@ mcp.add_middleware(ErrorHandlingMiddleware(
 ))
 
 # Add response caching middleware with Redis backend
+# Note: SSE streaming endpoints are automatically excluded by FastMCP
 if redis_store:
     try:
         mcp.add_middleware(ResponseCachingMiddleware(
@@ -155,7 +156,12 @@ _original_http_app = mcp.http_app
 
 
 def http_app_with_middleware(**kwargs):
-    """Add CORS, SSE headers, and health check to the underlying Starlette app"""
+    """Add CORS and health check to the underlying Starlette app
+
+    Note: We don't add custom SSE headers middleware because:
+    1. FastMCP already handles SSE headers correctly
+    2. Custom middleware on top of SSE streaming causes buffering issues
+    """
     app = _original_http_app(**kwargs)
 
     # Add CORS if not already present
@@ -167,17 +173,6 @@ def http_app_with_middleware(**kwargs):
             allow_methods=["*"],
             allow_headers=["*"],
         )
-
-    # Add SSE middleware to prevent buffering
-    @app.middleware("http")
-    async def add_sse_headers(request, call_next):
-        response = await call_next(request)
-        if request.url.path in ["/sse", "/messages"]:
-            response.headers["X-Accel-Buffering"] = "no"
-            response.headers["Cache-Control"] = "no-cache"
-            if "Connection" not in response.headers:
-                response.headers["Connection"] = "keep-alive"
-        return response
 
     # Add health check endpoint
     async def health_check(request):
