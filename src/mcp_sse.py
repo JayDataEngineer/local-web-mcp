@@ -10,31 +10,97 @@ Tools:
 - clean_database: Clear all domain tracking data
 """
 
-import os
-from json import dumps
-from loguru import logger
+from __future__ import annotations
 
-from fastmcp import FastMCP
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastmcp import FastMCP, Context
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
-
-from .services.search_service import get_search_service
-from .services.scrape_service import get_scrape_service
-from .db.database import get_db
-from .models.unified import ScrapeRequest, ScrapingMethod
+from loguru import logger
+import os
 
 
-# Create FastMCP instance
-mcp = FastMCP("mcp-research-server")
-
-# Configure CORS
-allowed_origins = [
+# Configure CORS from environment
+ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
     if origin.strip()
 ]
 
-# Wrap http_app to add CORS and health check
+
+# Service singletons (initialized in lifespan)
+_search_service = None
+_scrape_service = None
+_db = None
+
+
+def _ensure_services():
+    """Ensure services are initialized (for direct tool calls outside MCP)"""
+    global _search_service, _scrape_service, _db
+    if _search_service is None:
+        from .services.search_service import get_search_service
+        _search_service = get_search_service()
+    if _scrape_service is None:
+        from .services.scrape_service import get_scrape_service
+        _scrape_service = get_scrape_service()
+    if _db is None:
+        from .db.database import Database
+        _db = Database()
+        # Don't init here - it will be in lifespan or on first use
+
+
+async def _get_db():
+    """Get database, initializing if needed"""
+    global _db
+    if _db is None:
+        from .db.database import Database
+        _db = Database()
+    # Ensure initialized
+    if _db._engine is None:
+        await _db.init()
+    return _db
+
+
+@asynccontextmanager
+async def service_lifespan(server: FastMCP):
+    """Initialize and cleanup services on server startup/shutdown"""
+    global _search_service, _scrape_service, _db
+
+    from .services.search_service import get_search_service
+    from .services.scrape_service import get_scrape_service
+    from .db.database import Database
+
+    logger.info("Initializing services...")
+    _search_service = get_search_service()
+    _scrape_service = get_scrape_service()
+    _db = Database()
+    await _db.init()
+    logger.info("Services ready")
+
+    yield
+
+    logger.info("Shutting down services...")
+    await _search_service.close()
+    await _scrape_service.close()
+    await _db.close()
+    logger.info("Shutdown complete")
+
+
+# Create FastMCP instance with metadata
+mcp = FastMCP(
+    name="mcp-research-server",
+    instructions=(
+        "Provides web search and URL scraping tools. "
+        "Use search_web to find information and scrape_url to extract content from pages. "
+        "The server learns which scraping method works best for each domain."
+    ),
+    lifespan=service_lifespan
+)
+
+
+# Add CORS and health check to the underlying Starlette app
 _original_http_app = mcp.http_app
 
 
@@ -46,7 +112,7 @@ def http_app_with_middleware(**kwargs):
     if not any(m.cls == CORSMiddleware for m in app.user_middleware):
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=allowed_origins,
+            allow_origins=ALLOWED_ORIGINS,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -66,15 +132,33 @@ mcp.http_app = http_app_with_middleware
 # ========== MCP TOOLS ==========
 
 @mcp.tool()
-async def search_web(query: str, pages: int = 10, exclude_blacklist: bool = True) -> str:
-    """Search the web using multiple search engines (Brave, Bing, DuckDuckGo, Ask)"""
-    search_service = get_search_service()
-    result = await search_service.search(
+async def search_web(
+    query: str,
+    pages: int = 10,
+    exclude_blacklist: bool = True,
+    ctx: Context | None = None
+) -> dict:
+    """Search the web using multiple search engines
+
+    Args:
+        query: Search query string
+        pages: Number of search result pages to fetch (1-10)
+        exclude_blacklist: Exclude blacklisted domains from results
+
+    Returns:
+        Dictionary with query, total_results, and list of results
+    """
+    _ensure_services()
+    if ctx:
+        await ctx.info(f"Searching for: {query}")
+
+    result = await _search_service.search(
         query=query,
         pages=pages,
         exclude_blacklist=exclude_blacklist
     )
-    return dumps({
+
+    return {
         "query": query,
         "total_results": result.total_results,
         "pages_scraped": result.pages_scraped,
@@ -85,46 +169,92 @@ async def search_web(query: str, pages: int = 10, exclude_blacklist: bool = True
             {"title": r.title, "url": r.url, "snippet": r.snippet}
             for r in result.results
         ]
-    }, indent=2)
+    }
 
 
 @mcp.tool()
-async def scrape_url(url: str, method: str = None, css_selector: str = None) -> str:
-    """Scrape a URL and extract clean markdown content. Learns which method works best per domain."""
-    scrape_service = get_scrape_service()
+async def scrape_url(
+    url: str,
+    method: str | None = None,
+    css_selector: str | None = None,
+    ctx: Context | None = None
+) -> dict:
+    """Scrape a URL and extract clean markdown content
+
+    The server learns which scraping method works best per domain and
+    automatically uses it on future requests.
+
+    Args:
+        url: URL to scrape
+        method: Force specific scraping method (crawl4ai, selenium, pdf)
+        css_selector: Optional CSS selector for targeted content extraction
+
+    Returns:
+        Dictionary with success status, title, content, and metadata
+    """
+    _ensure_services()
+    if ctx:
+        await ctx.info(f"Scraping: {url}")
+
+    from .models.unified import ScrapeRequest, ScrapingMethod
 
     request = ScrapeRequest(
         url=url,
         force_method=ScrapingMethod(method) if method else None,
         css_selector=css_selector
     )
-    result = await scrape_service.scrape(request)
+    result = await _scrape_service.scrape(request)
 
-    return dumps({
+    response = {
         "url": result.url,
         "success": result.success,
         "method_used": result.method_used.value if result.method_used else None,
         "title": result.title,
         "content": result.content,
         "word_count": result.metadata.get("word_count", 0) if result.metadata else 0,
-        "error": result.error
-    }, indent=2)
+    }
+
+    if not result.success and result.error:
+        response["error"] = result.error
+        if ctx:
+            await ctx.warning(f"Scrape failed: {result.error}")
+
+    return response
 
 
 @mcp.tool()
-async def get_domains() -> str:
-    """List all tracked domains with their preferred scraping methods"""
-    db = await get_db()
+async def get_domains(ctx: Context | None = None) -> dict:
+    """List all tracked domains with their preferred scraping methods
+
+    Returns:
+        Dictionary with total count and list of domain records
+    """
+    db = await _get_db()
     domains = await db.get_all_domains()
-    return dumps({"total": len(domains), "domains": domains}, indent=2)
+    return {
+        "total": len(domains),
+        "domains": domains
+    }
 
 
 @mcp.tool()
-async def clean_database() -> str:
-    """Clear all domain tracking data"""
-    db = await get_db()
+async def clean_database(ctx: Context | None = None) -> dict:
+    """Clear all domain tracking data
+
+    This resets all learned scraping methods and blacklist entries.
+    Use this to start fresh.
+
+    Returns:
+        Dictionary with status and count of removed records
+    """
+    db = await _get_db()
     count = await db.clean()
-    return dumps({"status": "success", "records_removed": count}, indent=2)
+    if ctx:
+        await ctx.info(f"Cleaned {count} domain records")
+    return {
+        "status": "success",
+        "records_removed": count
+    }
 
 
 # ========== SERVER ENTRY POINT ==========
@@ -132,6 +262,7 @@ async def clean_database() -> str:
 if __name__ == "__main__":
     port = int(os.getenv("MCP_PORT", 8000))
     host = os.getenv("MCP_HOST", "0.0.0.0")
+
     logger.info(f"MCP SSE server starting on {host}:{port}")
     logger.info(f"Connect via Tailscale: http://<your-tailscale-ip>:{port}/sse")
     logger.info(f"MCP tools: search_web, scrape_url, get_domains, clean_database")
