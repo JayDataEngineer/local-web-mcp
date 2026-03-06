@@ -112,10 +112,10 @@ class ContentCleaner:
                 tag.decompose()
 
             # Convert to markdown with consistent settings
+            # Note: Pass HTML string, not BeautifulSoup object
             markdown = md(
-                soup,
+                str(soup),  # Convert soup to string first
                 heading_style="ATX",  # # ## ### style (not underline)
-                strip=["script", "style", "noscript"],
                 strip_comments=True,
                 convert=["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li",
                         "strong", "em", "a", "blockquote", "pre", "code", "hr", "br",
