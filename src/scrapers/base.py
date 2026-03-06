@@ -89,7 +89,17 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None) -> dict:
 
                 # Check minimum content length
                 if len(clean_markdown) < MIN_CONTENT_LENGTH:
-                    return build_content_too_short_response(url, "crawl4ai", len(clean_markdown))
+                    # Try Crawl4AI's built-in markdown as fallback
+                    crawl4ai_md = result.markdown
+                    # Handle both string (older) and MarkdownGenerationResult (newer)
+                    if hasattr(crawl4ai_md, 'raw_markdown'):
+                        crawl4ai_md = crawl4ai_md.raw_markdown
+
+                    if len(crawl4ai_md) >= MIN_CONTENT_LENGTH:
+                        logger.info(f"Using Crawl4AI's markdown fallback for {url} ({len(crawl4ai_md)} chars)")
+                        clean_markdown = crawl4ai_md
+                    else:
+                        return build_content_too_short_response(url, "crawl4ai", len(clean_markdown))
 
                 title = result.metadata.get("title", "") if hasattr(result, "metadata") else ""
 
