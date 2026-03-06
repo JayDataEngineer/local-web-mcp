@@ -8,19 +8,14 @@ services:
     image: caddy:2
     container_name: mcp-caddy
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+    network_mode: host  # Host network so Tailscale Funnel can reach 127.0.0.1:80
     environment:
       - TAILNET_DOMAIN=${TAILNET_DOMAIN:-your-tailnet.ts.net}
       - TAILNET_MACHINE_NAME=${TAILNET_MACHINE_NAME:-mcp-server}
-    networks:
-      - mcp_net
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-      - ts_socket:/var/run/tailscale:ro  # Shared socket for TLS certs
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:2019/config/"]
       interval: 10s
@@ -31,8 +26,8 @@ services:
   mcp-server:
     build: .
     container_name: mcp-server
-    expose:
-      - "8000"
+    ports:
+      - "127.0.0.1:8000:8000"  # Expose to localhost for Caddy (host network)
     networks:
       - mcp_net
     volumes:
@@ -219,7 +214,7 @@ services:
         reservations:
           memory: 128M
 
-  # Tailscale Sidecar
+  # Tailscale Sidecar with Funnel
   ts-sidecar:
     image: tailscale/tailscale:latest
     hostname: mcp-server
@@ -230,10 +225,12 @@ services:
       - TS_AUTHKEY=${TS_AUTHKEY:-}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_ARGS=--port=41641
-      - TS_SOCKET_DIR=/tmp/tailscale  # Write socket to shared volume location
+      - TS_SOCKET_DIR=/tmp/tailscale
     volumes:
       - ts-data:/var/lib/tailscale
-      - ts_socket:/tmp/tailscale  # Shared socket volume
+      - ts_socket:/tmp/tailscale
+      - ./scripts/funnel-entrypoint.sh:/script/funnel-entrypoint.sh:ro
+    command: /script/funnel-entrypoint.sh
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "tailscale status || exit 1"]

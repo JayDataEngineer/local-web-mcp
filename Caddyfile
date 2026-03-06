@@ -1,19 +1,14 @@
 # Caddyfile for MCP Research Server
 # Tailscale Funnel handles HTTPS termination, so Caddy only needs HTTP
+# Caddy runs on host network to be reachable by Funnel at 127.0.0.1:80
 
 # HTTP listener - Tailscale Funnel forwards HTTPS here
 :80 {
-    # Use Docker DNS - mcp-server is the container name on mcp_net
-    reverse_proxy mcp-server:8000
+    # MCP server is exposed via Docker's published port or via Docker bridge
+    reverse_proxy localhost:8000
 
     log {
         output stdout
         format console
     }
 }
-
-# Optional: Direct HTTPS with Let's Encrypt (for non-Tailscale access)
-# Uncomment if you want direct HTTPS without Tailscale
-# https://{$TAILNET_MACHINE_NAME}.{$TAILNET_DOMAIN} {
-#     reverse_proxy mcp-server:8000
-# }
