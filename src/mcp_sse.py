@@ -211,11 +211,82 @@ def _normalize_path(path: str) -> str:
     )
 
 
-def _load_docs_sources() -> tuple[dict, set]:
+def _extract_domain(url: str) -> str:
+    """Extract root domain from URL for allowlist checking.
+
+    Returns the root domain that should be used for fencing:
+    - 'python.langchain.com' → 'langchain.com' (allows all subdomains)
+    - 'langchain-ai.github.io' → 'langchain-ai.github.io' (github.io is public suffix)
+    - 'nextjs.org' → 'nextjs.org'
+
+    This allows fetching from any subdomain of the configured source.
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    netloc = parsed.netloc
+    # Remove port if present
+    if ":" in netloc:
+        netloc = netloc.split(":")[0]
+    # Remove www. prefix
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+
+    # Split into parts
+    parts = netloc.split(".")
+
+    # Known public suffixes that should be treated as TLDs
+    # These are domains where the "effective" TLD is more than one part
+    public_suffixes = {
+        "github.io", "gitlab.io", "bitbucket.io",
+        "vercel.app", "deno.dev", "workers.dev",
+        "pages.dev", "r2.dev", "firebaseapp.com",
+        "herokuapp.com", "netlify.app",
+    }
+
+    # For 3+ part domains, check if the last 2 parts form a public suffix
+    if len(parts) >= 3:
+        potential_suffix = ".".join(parts[-2:])
+        if potential_suffix in public_suffixes:
+            # Keep the 3-part domain (e.g., langchain-ai.github.io)
+            return ".".join(parts[-3:])
+
+    # For most domains, return the last 2 parts (e.g., langchain.com)
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+
+    return netloc
+
+
+def _is_url_allowed(url: str, allowed_domains: set[str]) -> bool:
+    """Check if a URL is from an allowed domain.
+
+    Allows subdomains of configured domains. For example, if
+    'langchain.com' is allowed, then 'docs.langchain.com' is also allowed.
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    netloc = parsed.netloc
+
+    # Remove port if present
+    if ":" in netloc:
+        netloc = netloc.split(":")[0]
+
+    # Remove www. prefix for checking
+    check_netloc = netloc[4:] if netloc.startswith("www.") else netloc
+
+    # Check exact match or subdomain match
+    for allowed in allowed_domains:
+        if check_netloc == allowed or check_netloc.endswith(f".{allowed}"):
+            return True
+
+    return False
+
+
+def _load_docs_sources() -> tuple[dict, set, set]:
     """Load documentation sources from YAML config file.
 
     Returns:
-        Tuple of (name -> url mapping, set of allowed local file paths)
+        Tuple of (name -> url mapping, set of allowed local file paths, set of allowed domains)
     """
     import yaml
     local_sources = []
@@ -249,13 +320,20 @@ def _load_docs_sources() -> tuple[dict, set]:
             mapping[name] = f"file://{path}"
             allowed_local.add(path)
 
-        return mapping, allowed_local
+        # Build allowed domains set (for security - domain fencing)
+        allowed_domains = set()
+        for s in remote_sources:
+            domain = _extract_domain(s["llms_txt"])
+            allowed_domains.add(domain)
+
+        return mapping, allowed_local, allowed_domains
 
     except FileNotFoundError:
         logger.warning(f"Docs config not found: {DOCS_CONFIG_PATH}")
-        return {}, set()
+        return {}, set(), set()
     except Exception as e:
         logger.warning(f"Failed to load docs config: {e}")
+        return {}, set(), set()
         return {}, set()
 
 
@@ -286,7 +364,7 @@ async def docs_list_sources(ctx: Context | None = None) -> str:
     if ctx:
         await ctx.debug("Loading documentation sources")
 
-    sources, _ = _load_docs_sources()
+    sources, _, _ = _load_docs_sources()
     if not sources:
         return "No documentation sources configured."
 
@@ -337,9 +415,14 @@ async def docs_fetch_docs(
     Note:
         Results are cached for {DOCS_CACHE_TTL}s. Cached content returns
         instantly without re-fetching from the remote server.
+
+    Security:
+        Domain fencing is enabled - only URLs from configured documentation
+        sources and their subdomains are allowed. This prevents fetching from
+        internal services or arbitrary URLs.
     """
-    # Get allowed local files for security
-    _, allowed_local_files = _load_docs_sources()
+    # Get allowed local files and domains for security
+    _, allowed_local_files, allowed_domains = _load_docs_sources()
     url_or_path = url.strip()
 
     # Handle local file paths
@@ -391,9 +474,20 @@ async def docs_fetch_docs(
         except Exception as e:
             raise ToolError(f"Error reading local file: {str(e)}")
 
-    # Handle HTTP/HTTPS URLs
+    # Handle HTTP/HTTPS URLs with domain fencing
     if ctx:
         await ctx.info(f"Fetching documentation: {url}")
+
+    # Security: Domain fencing - check if URL is from allowed domain
+    if not _is_url_allowed(url, allowed_domains):
+        # Extract the domain from the requested URL for the error message
+        from urllib.parse import urlparse
+        requested_domain = urlparse(url).netloc
+        raise ToolError(
+            f"URL not allowed: {url} is from domain '{requested_domain}'. "
+            f"Documentation fetches are restricted to configured sources only. "
+            f"Allowed domains: {', '.join(sorted(allowed_domains))}"
+        )
 
     # Get services from lifespan context with safe access
     cleaner = ctx.lifespan_context.get("cleaner")
