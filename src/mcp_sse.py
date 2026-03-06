@@ -12,10 +12,8 @@ Tools:
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-
 from fastmcp import FastMCP, Context
+from fastmcp.server.lifespan import lifespan
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from loguru import logger
@@ -30,65 +28,41 @@ ALLOWED_ORIGINS = [
 ]
 
 
-# Service singletons (initialized in lifespan)
-_search_service = None
-_scrape_service = None
-_db = None
+# ========== LIFESPAN ==========
 
-
-def _ensure_services():
-    """Ensure services are initialized (for direct tool calls outside MCP)"""
-    global _search_service, _scrape_service, _db
-    if _search_service is None:
-        from .services.search_service import get_search_service
-        _search_service = get_search_service()
-    if _scrape_service is None:
-        from .services.scrape_service import get_scrape_service
-        _scrape_service = get_scrape_service()
-    if _db is None:
-        from .db.database import Database
-        _db = Database()
-        # Don't init here - it will be in lifespan or on first use
-
-
-async def _get_db():
-    """Get database, initializing if needed"""
-    global _db
-    if _db is None:
-        from .db.database import Database
-        _db = Database()
-    # Ensure initialized
-    if _db._engine is None:
-        await _db.init()
-    return _db
-
-
-@asynccontextmanager
+@lifespan
 async def service_lifespan(server: FastMCP):
-    """Initialize and cleanup services on server startup/shutdown"""
-    global _search_service, _scrape_service, _db
+    """Initialize and cleanup services on server startup/shutdown
 
+    Yields a dict with services that becomes accessible via ctx.lifespan_context
+    """
     from .services.search_service import get_search_service
     from .services.scrape_service import get_scrape_service
     from .db.database import Database
 
     logger.info("Initializing services...")
-    _search_service = get_search_service()
-    _scrape_service = get_scrape_service()
-    _db = Database()
-    await _db.init()
-    logger.info("Services ready")
+    search_service = get_search_service()
+    scrape_service = get_scrape_service()
+    db = Database()
+    await db.init()
 
-    yield
+    # Yield lifespan context - accessible from tools via ctx.lifespan_context
+    try:
+        yield {
+            "search_service": search_service,
+            "scrape_service": scrape_service,
+            "db": db,
+        }
+    finally:
+        logger.info("Shutting down services...")
+        await search_service.close()
+        await scrape_service.close()
+        await db.close()
+        logger.info("Shutdown complete")
 
-    logger.info("Shutting down services...")
-    await _search_service.close()
-    await _scrape_service.close()
-    await _db.close()
-    logger.info("Shutdown complete")
 
+# ========== FASTMCP SERVER ==========
 
-# Create FastMCP instance with metadata
 mcp = FastMCP(
     name="mcp-research-server",
     instructions=(
@@ -100,12 +74,13 @@ mcp = FastMCP(
 )
 
 
-# Add CORS and health check to the underlying Starlette app
+# ========== CORS & HEALTH CHECK ==========
+
 _original_http_app = mcp.http_app
 
 
 def http_app_with_middleware(**kwargs):
-    """Add CORS and health check to the underlying Starlette app"""
+    """Add CORS, SSE headers, and health check to the underlying Starlette app"""
     app = _original_http_app(**kwargs)
 
     # Add CORS if not already present
@@ -122,7 +97,6 @@ def http_app_with_middleware(**kwargs):
     @app.middleware("http")
     async def add_sse_headers(request, call_next):
         response = await call_next(request)
-        # Add headers to prevent reverse proxy buffering for SSE endpoints
         if request.url.path in ["/sse", "/messages"]:
             response.headers["X-Accel-Buffering"] = "no"
             response.headers["Cache-Control"] = "no-cache"
@@ -160,29 +134,20 @@ async def search_web(
     Returns:
         Dictionary with query, total_results, and list of results
     """
-    _ensure_services()
     if ctx:
-        await ctx.info(
-            f"Searching for: {query}",
-            extra={"query": query, "pages": pages, "exclude_blacklist": exclude_blacklist}
-        )
+        await ctx.info(f"Searching for: {query}")
 
-    result = await _search_service.search(
+    # Get services from lifespan context
+    search_svc = ctx.lifespan_context["search_service"]
+
+    result = await search_svc.search(
         query=query,
         pages=pages,
         exclude_blacklist=exclude_blacklist
     )
 
     if ctx:
-        await ctx.info(
-            f"Found {result.total_results} results",
-            extra={
-                "total_results": result.total_results,
-                "pages_scraped": result.pages_scraped,
-                "search_time_ms": result.search_time_ms,
-                "cached": result.cached
-            }
-        )
+        await ctx.info(f"Found {result.total_results} results")
 
     return {
         "query": query,
@@ -218,21 +183,20 @@ async def scrape_url(
     Returns:
         Dictionary with success status, title, content, and metadata
     """
-    _ensure_services()
     if ctx:
-        await ctx.info(
-            f"Scraping: {url}",
-            extra={"url": url, "method": method, "css_selector": bool(css_selector)}
-        )
+        await ctx.info(f"Scraping: {url}")
 
     from .models.unified import ScrapeRequest, ScrapingMethod
+
+    # Get services from lifespan context
+    scrape_svc = ctx.lifespan_context["scrape_service"]
 
     request = ScrapeRequest(
         url=url,
         force_method=ScrapingMethod(method) if method else None,
         css_selector=css_selector
     )
-    result = await _scrape_service.scrape(request)
+    result = await scrape_svc.scrape(request)
 
     response = {
         "url": result.url,
@@ -246,10 +210,7 @@ async def scrape_url(
     if not result.success and result.error:
         response["error"] = result.error
         if ctx:
-            await ctx.error(
-                f"Scrape failed: {result.error}",
-                extra={"url": url, "error": result.error}
-            )
+            await ctx.error(f"Scrape failed: {result.error}")
 
     return response
 
@@ -264,7 +225,8 @@ async def get_domains(ctx: Context | None = None) -> dict:
     if ctx:
         await ctx.debug("Fetching all tracked domains")
 
-    db = await _get_db()
+    # Get database from lifespan context
+    db = ctx.lifespan_context["db"]
     domains = await db.get_all_domains()
 
     if ctx:
@@ -286,13 +248,13 @@ async def clean_database(ctx: Context | None = None) -> dict:
     Returns:
         Dictionary with status and count of removed records
     """
-    db = await _get_db()
+    # Get database from lifespan context
+    db = ctx.lifespan_context["db"]
     count = await db.clean()
+
     if ctx:
-        await ctx.info(
-            f"Cleaned {count} domain records",
-            extra={"records_removed": count}
-        )
+        await ctx.info(f"Cleaned {count} domain records")
+
     return {
         "status": "success",
         "records_removed": count
