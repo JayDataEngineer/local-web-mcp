@@ -30,7 +30,6 @@ dependencies = [
     "selectolax>=0.3.0",
     "pydantic-settings>=2.0.0",
     "py-key-value-aio[redis]>=0.2.0",
-    "mcpdoc>=0.1.0",
 ]
 
 [tool.uv]

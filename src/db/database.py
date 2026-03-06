@@ -13,7 +13,7 @@ from sqlalchemy import select, update, delete, func
 from sqlalchemy.orm import selectinload
 
 from .models import Domain
-from ..constants import BLACKLIST_FAILURE_THRESHOLD
+from ..core.constants import BLACKLIST_FAILURE_THRESHOLD
 
 
 class Database:

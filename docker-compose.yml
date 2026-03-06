@@ -1,14 +1,23 @@
+networks:
+  mcp_net:
+    driver: bridge
+
 services:
   # Caddy Reverse Proxy
   caddy:
     image: caddy:2
     container_name: mcp-caddy
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - mcp_net
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+      - ts_socket:/var/run/tailscale:ro  # Shared socket for TLS certs
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:2019/config/"]
       interval: 10s
@@ -19,8 +28,10 @@ services:
   mcp-server:
     build: .
     container_name: mcp-server
-    ports:
-      - "127.0.0.1:${MCP_PORT:-8000}:${MCP_PORT:-8000}"
+    expose:
+      - "8000"
+    networks:
+      - mcp_net
     volumes:
       - ./docs_config.yaml:/app/docs_config.yaml:ro
     environment:
@@ -56,6 +67,8 @@ services:
   celery-worker:
     build: .
     container_name: mcp-celery-worker
+    networks:
+      - mcp_net
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
@@ -74,10 +87,10 @@ services:
       resources:
         limits:
           memory: 3G
-          cpus: '2.0'
+        cpus: '2.0'
         reservations:
           memory: 1G
-          cpus: '0.5'
+        cpus: '0.5'
     healthcheck:
       test: ["CMD-SHELL", "celery -A src.celery_app inspect ping || exit 1"]
       interval: 30s
@@ -88,8 +101,10 @@ services:
   flower:
     build: .
     container_name: mcp-flower
+    networks:
+      - mcp_net
     ports:
-      - "5555:5555"
+      - "127.0.0.1:5555:5555"
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -109,6 +124,8 @@ services:
   celery-beat:
     build: .
     container_name: mcp-celery-beat
+    networks:
+      - mcp_net
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -134,6 +151,8 @@ services:
     image: searxng/searxng:latest
     container_name: mcp-searxng
     hostname: searxng
+    networks:
+      - mcp_net
     volumes:
       - ./searxng-config-remote:/etc/searxng:ro
     environment:
@@ -156,6 +175,8 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: mcp-postgres
+    networks:
+      - mcp_net
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-mcp_server}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
@@ -179,6 +200,8 @@ services:
   redis:
     image: redis:alpine
     container_name: mcp-redis
+    networks:
+      - mcp_net
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -192,7 +215,7 @@ services:
         reservations:
           memory: 128M
 
-  # Tailscale
+  # Tailscale Sidecar
   ts-sidecar:
     image: tailscale/tailscale:latest
     hostname: mcp-server
@@ -203,8 +226,10 @@ services:
       - TS_AUTHKEY=${TS_AUTHKEY:-}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_ARGS=--port=41641
+      - TS_SOCKET_DIR=/tmp/tailscale  # Write socket to shared volume location
     volumes:
       - ts-data:/var/lib/tailscale
+      - ts_socket:/tmp/tailscale  # Shared socket volume
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "sh", "-c", "tailscale status || exit 1"]
@@ -217,3 +242,4 @@ volumes:
   ts-data:
   caddy_data:
   caddy_config:
+  ts_socket:  # Shared volume for Tailscale socket

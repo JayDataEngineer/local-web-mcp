@@ -4,7 +4,7 @@ from celery import Celery
 from celery.schedules import crontab
 from loguru import logger
 
-from .constants import (
+from .core.constants import (
     CELERY_TASK_TIMEOUT_SECONDS,
     CELERY_TASK_SOFT_TIMEOUT_SECONDS,
     CELERY_WORKER_CONCURRENCY,

@@ -4,7 +4,7 @@ from typing import Callable, Any
 from loguru import logger
 from datetime import datetime
 
-from ..constants import (
+from ..core.constants import (
     CRAWL4AI_WORD_COUNT_THRESHOLD,
     SELENIUM_PAGE_LOAD_WAIT_SECONDS,
     MIN_CONTENT_LENGTH,

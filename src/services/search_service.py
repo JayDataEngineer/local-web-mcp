@@ -5,7 +5,7 @@ from loguru import logger
 from urllib.parse import urlparse
 
 from ..models.unified import SearchResult, CombinedSearchResponse
-from ..constants import DEFAULT_SEARCH_ENGINES, HTTP_REQUEST_TIMEOUT
+from ..core.constants import DEFAULT_SEARCH_ENGINES, HTTP_REQUEST_TIMEOUT
 
 
 class UnifiedSearchService:
