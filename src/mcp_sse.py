@@ -19,7 +19,6 @@ from __future__ import annotations
 from fastmcp import FastMCP, Context
 from fastmcp.server.lifespan import lifespan
 from fastmcp.server.middleware.caching import ResponseCachingMiddleware
-from fastmcp.server import create_proxy
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from loguru import logger
@@ -74,11 +73,15 @@ async def service_lifespan(server: FastMCP):
     """
     from .services.search_service import get_search_service
     from .services.scrape_service import get_scrape_service
+    from .services.content_cleaner import get_content_cleaner
+    from .services.cache_service import get_cache_service
     from .db.database import Database
 
     logger.info("Initializing services...")
     search_service = get_search_service()
     scrape_service = get_scrape_service()
+    cleaner = get_content_cleaner()
+    cache = await get_cache_service()
     db = Database()
     await db.init()
 
@@ -86,6 +89,8 @@ async def service_lifespan(server: FastMCP):
         yield {
             "search_service": search_service,
             "scrape_service": scrape_service,
+            "cleaner": cleaner,
+            "cache": cache,
             "db": db,
         }
     finally:
@@ -172,28 +177,145 @@ def http_app_with_middleware(**kwargs):
 mcp.http_app = http_app_with_middleware
 
 
-# ========== DOCUMENTATION MOUNT (mcpdoc) ==========
+# ========== DOCUMENTATION TOOLS (Native Implementation) ==========
 
-# Mount mcpdoc as a persistent stdio subprocess
-# This spawns mcpdoc ONCE per client session, not per tool call
-# Tools will be namespaced as "docs_list_doc_sources", "docs_fetch_docs"
 DOCS_CONFIG_PATH = os.getenv("DOCS_CONFIG_PATH", "/app/docs_config.yaml")
+DOCS_CACHE_TTL = int(os.getenv("DOCS_CACHE_TTL", SCRAPE_CACHE_TTL))  # 1 hour default
 
-try:
-    mcp.mount(
-        create_proxy({
-            "mcpServers": {
-                "default": {
-                    "command": "mcpdoc",  # Direct executable (installed in image)
-                    "args": ["--yaml", DOCS_CONFIG_PATH]
-                }
-            }
-        }),
-        namespace="docs"  # Prefixes all mcpdoc tools with "docs_"
-    )
-    logger.info(f"Documentation mounted from: {DOCS_CONFIG_PATH}")
-except Exception as e:
-    logger.warning(f"Failed to mount mcpdoc: {e}")
+
+def _load_docs_sources() -> dict:
+    """Load documentation sources from YAML config file."""
+    import yaml
+    try:
+        with open(DOCS_CONFIG_PATH, "r") as f:
+            sources = yaml.safe_load(f) or []
+        # Convert list of dicts to name -> url mapping
+        return {
+            s.get("name", _extract_domain(s.get("llms_txt", ""))): s["llms_txt"]
+            for s in sources
+        }
+    except FileNotFoundError:
+        logger.warning(f"Docs config not found: {DOCS_CONFIG_PATH}")
+        return {}
+    except Exception as e:
+        logger.warning(f"Failed to load docs config: {e}")
+        return {}
+
+
+def _extract_domain(url: str) -> str:
+    """Extract domain from URL for naming."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    return parsed.netloc.replace("www.", "").split(".")[0]
+
+
+@mcp.tool()
+async def docs_list_sources(ctx: Context | None = None) -> str:
+    """List all available documentation sources (llms.txt endpoints)
+
+    Returns:
+        Formatted list of documentation sources with their URLs
+    """
+    if ctx:
+        await ctx.debug("Loading documentation sources")
+
+    sources = _load_docs_sources()
+    if not sources:
+        return "No documentation sources configured."
+
+    lines = []
+    for name, url in sources.items():
+        lines.append(f"{name}")
+        lines.append(f"  URL: {url}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def docs_fetch_docs(
+    url: str,
+    use_cache: bool = True,
+    ctx: Context | None = None
+) -> str:
+    """Fetch documentation from a URL and convert to clean Markdown
+
+    This tool fetches HTML documentation from the given URL and converts
+    it to clean Markdown using the same content cleaner as the scrape tool.
+
+    Args:
+        url: The documentation URL to fetch
+        use_cache: Whether to use cached content if available (default: true)
+
+    Returns:
+        Clean Markdown content from the documentation URL
+
+    Note:
+        Results are cached for {DOCS_CACHE_TTL}s. Cached content returns
+        instantly without re-fetching from the remote server.
+    """
+    if ctx:
+        await ctx.info(f"Fetching documentation: {url}")
+
+    # Get services from lifespan context
+    cleaner = ctx.lifespan_context["cleaner"]
+    cache = ctx.lifespan_context.get("cache")
+
+    # Check cache first
+    if use_cache and cache:
+        cached = await cache.get_scrape(url)
+        if cached:
+            if ctx:
+                await ctx.debug("Returning cached documentation")
+            cached["cached"] = True
+            return cached.get("content", "Error: cached content invalid")
+
+    # Fetch the documentation
+    import httpx
+    from urllib.parse import urlparse
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            if ctx:
+                await ctx.debug(f"Sending HTTP GET to {url}")
+
+            response = await client.get(url)
+            response.raise_for_status()
+            html = response.text
+
+        # Use ContentCleaner for better HTML->Markdown conversion
+        markdown = cleaner.clean(html, url=url)
+
+        if not markdown:
+            return f"Error: No content could be extracted from {url}"
+
+        # Cache the result
+        if use_cache and cache:
+            await cache.set_scrape(url, {
+                "url": url,
+                "content": markdown,
+                "method_used": "docs",
+            })
+
+        if ctx:
+            word_count = len(markdown.split())
+            await ctx.info(f"Fetched {word_count} words of documentation")
+
+        return markdown
+
+    except httpx.HTTPStatusError as e:
+        error = f"HTTP {e.response.status_code} error fetching {url}"
+        if ctx:
+            await ctx.error(error)
+        return f"Error: {error}"
+    except httpx.RequestError as e:
+        error = f"Network error fetching {url}: {e}"
+        if ctx:
+            await ctx.error(error)
+        return f"Error: {error}"
+    except Exception as e:
+        error = f"Unexpected error fetching {url}: {e}"
+        if ctx:
+            await ctx.error(error)
+        return f"Error: {error}"
 
 
 # ========== MCP TOOLS ==========
@@ -372,6 +494,6 @@ if __name__ == "__main__":
     logger.info(f"Session state: Redis @ {REDIS_HOST}:{REDIS_PORT}")
     logger.info(f"Caching: enabled (search: {SEARCH_CACHE_TTL}s, scrape: {SCRAPE_CACHE_TTL}s)")
     logger.info(f"Web tools: search_web, scrape_url, get_domains, clean_database")
-    logger.info(f"Docs tools (namespace: docs_): list_doc_sources, fetch_docs")
+    logger.info(f"Docs tools: docs_list_sources, docs_fetch_docs")
 
     mcp.run(transport="sse", host=host, port=port)

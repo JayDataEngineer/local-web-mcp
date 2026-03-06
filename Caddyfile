@@ -1,19 +1,7 @@
 # Caddyfile for MCP Research Server
-# This configuration provides:
-# - HTTP on port 80 (fallback, for testing)
-# - HTTPS with automatic TLS via Tailscale MagicDNS
+# Tailscale Funnel handles HTTPS termination, so Caddy only needs HTTP
 
-# Get machine name and tailnet domain from environment
-# Full URL will be: {TAILNET_MACHINE_NAME}.{TAILNET_DOMAIN}
-{$TAILNET_MACHINE_NAME}: {
-    # Show admin page with configure button for Tailscale
-    @tailscale {
-        protocol tailscale
-    }
-    reverse_proxy @tailscale
-}
-
-# HTTP fallback (for testing without MagicDNS)
+# HTTP listener - Tailscale Funnel forwards HTTPS here
 :80 {
     # Use Docker DNS - mcp-server is the container name on mcp_net
     reverse_proxy mcp-server:8000
@@ -24,18 +12,8 @@
     }
 }
 
-# HTTPS with Tailscale MagicDNS
-# Uses environment variables: TAILNET_MACHINE_NAME and TAILNET_DOMAIN
-https://{$TAILNET_MACHINE_NAME}.{$TAILNET_DOMAIN} {
-    reverse_proxy mcp-server:8000
-
-    # Tailscale provides automatic TLS certificates via the shared socket
-    tls tailscale {
-        dns ts.net
-    }
-
-    log {
-        output stdout
-        format console
-    }
-}
+# Optional: Direct HTTPS with Let's Encrypt (for non-Tailscale access)
+# Uncomment if you want direct HTTPS without Tailscale
+# https://{$TAILNET_MACHINE_NAME}.{$TAILNET_DOMAIN} {
+#     reverse_proxy mcp-server:8000
+# }
