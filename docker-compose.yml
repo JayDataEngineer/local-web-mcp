@@ -187,14 +187,15 @@ services:
     volumes:
       - ts-data:/var/lib/tailscale
     restart: unless-stopped
-    # Start Tailscale with funnel to expose port 8000 (mcp-server)
-    command: >
-      sh -c "
-      tailscale up &&
-      sleep 5 &&
-      tailscale funnel 8000 localhost &
-      exec tailscale tailscaled
-      "
+    # Run funnel in background, then keep tailscaled running
+    entrypoint:
+      - sh
+      - -c
+      - |
+        tailscale up
+        sleep 5
+        tailscale funnel 8000 localhost &
+        exec tailscaled
     healthcheck:
       test: ["CMD", "tailscale", "status"]
       interval: 10s
