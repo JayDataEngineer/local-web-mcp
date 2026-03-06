@@ -18,16 +18,7 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # External Services
-    searxng_url: str = "http://lang-tools-searxng:8080"
-    ollama_url: str = "http://ollama:11434"
-
-    # Scraper
-    stealth_scraper_url: str = "http://stealth-scraper:8000"
-    default_timeout: int = 30
-
-    # Models
-    summary_model: str = "llama3.2:3b"
-    main_model: str = "llama3.2"
+    searxng_url: str = "http://searxng:8080"
 
     # Database
     db_path: str = "/app/data/mcp_server.db"
@@ -49,5 +40,4 @@ class Settings(BaseSettings):
     )
 
 
-# Global settings instance
 settings = Settings()
