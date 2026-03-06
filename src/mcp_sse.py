@@ -282,6 +282,83 @@ def _is_url_allowed(url: str, allowed_domains: set[str]) -> bool:
     return False
 
 
+def _is_url_blacklisted(url: str) -> bool:
+    """Check if a URL is blacklisted for security reasons.
+
+    Blocks access to:
+    - localhost and loopback addresses
+    - Private network IPs (RFC 1918)
+    - Link-local addresses
+    - AWS metadata service
+    - Other internal services
+
+    Returns True if the URL should be blocked.
+    """
+    from urllib.parse import urlparse
+    import ipaddress
+
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.netloc
+
+        # Remove port if present
+        if ":" in netloc:
+            netloc = netloc.split(":")[0]
+
+        # Remove www. prefix for hostname checking
+        hostname = netloc[4:] if netloc.startswith("www.") else netloc
+
+        # Block localhost variants
+        blocked_hostnames = {
+            "localhost",
+            "127.0.0.1",
+            "0.0.0.0",
+            "::1",
+            "ip6-localhost",
+            "ip6-loopback",
+        }
+        if hostname.lower() in blocked_hostnames:
+            return True
+
+        # Block AWS metadata service
+        if hostname == "169.254.169.254":
+            return True
+
+        # Try to parse as IP address
+        try:
+            ip = ipaddress.ip_address(hostname)
+
+            # Block private IP ranges (RFC 1918)
+            if ip.is_private:
+                return True
+
+            # Block link-local addresses
+            if ip.is_link_local:
+                return True
+
+            # Block reserved addresses
+            if ip.is_reserved:
+                return True
+
+            # Block loopback addresses (in case hostname was an IP)
+            if ip.is_loopback:
+                return True
+
+        except ValueError:
+            # Not an IP address, continue checking
+            pass
+
+        # Block internal TLDs
+        if hostname.endswith(".local") or hostname.endswith(".internal"):
+            return True
+
+        return False
+
+    except Exception:
+        # If we can't parse the URL, err on the side of caution and block
+        return True
+
+
 def _load_docs_sources() -> tuple[dict, set, set]:
     """Load documentation sources from YAML config file.
 
@@ -652,10 +729,24 @@ async def scrape_url(
     Note:
         Results are cached for {SCRAPE_CACHE_TTL}s. Cached scrapes return
         instantly without re-downloading the page.
+
+    Security:
+        Internal and private IPs are blocked (localhost, 127.0.0.1, 10.*,
+        172.16-31.*, 192.168.*, 169.254.*). Only public URLs can be scraped.
     """
     # Validate URL
     if not url.startswith(("http://", "https://", "file://")):
         raise ToolError("URL must start with http://, https://, or file://")
+
+    # Security: Check for blacklisted URLs (internal/private IPs)
+    if url.startswith(("http://", "https://")) and _is_url_blacklisted(url):
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        raise ToolError(
+            f"URL is not allowed for security reasons: {parsed.netloc} "
+            f"appears to be a private or internal address. "
+            f"Only public URLs can be scraped."
+        )
 
     if ctx:
         await ctx.info(f"Scraping: {url}")
