@@ -71,30 +71,33 @@ class ContentCleaner:
     def _extract_core_html(self, html_content: str, css_selector: str = None) -> Optional[str]:
         """Extract core content HTML using best available parser"""
 
+        # Minimum length for meaningful content (prevents returning near-empty HTML)
+        MIN_CONTENT_HTML_LENGTH = 100
+
         # Priority 1: CSS selector (if provided)
         if css_selector:
             html = self._extract_by_css_selector(html_content, css_selector)
-            if html:
+            if html and len(html) > MIN_CONTENT_HTML_LENGTH:
                 return html
 
         # Priority 2: readability (Mozilla's Readability algorithm)
         if READABILITY_AVAILABLE:
             html = self._extract_with_readability(html_content)
-            if html:
+            if html and len(html) > MIN_CONTENT_HTML_LENGTH:
                 return html
 
         # Priority 3: trafilatura (great for articles/blogs)
         html = self._extract_with_trafilatura(html_content)
-        if html:
+        if html and len(html) > MIN_CONTENT_HTML_LENGTH:
             return html
 
         # Priority 4: selectolax (fastest, finds main content areas)
         if SELECTOLAX_AVAILABLE:
             html = self._extract_with_selectolax(html_content)
-            if html:
+            if html and len(html) > MIN_CONTENT_HTML_LENGTH:
                 return html
 
-        # Priority 5: BeautifulSoup basic extraction
+        # Priority 5: BeautifulSoup basic extraction (always return this as fallback)
         return self._extract_basic(html_content)
 
     def _html_to_consistent_markdown(self, html: str) -> str:
