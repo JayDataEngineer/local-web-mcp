@@ -118,6 +118,18 @@ def http_app_with_middleware(**kwargs):
             allow_headers=["*"],
         )
 
+    # Add SSE middleware to prevent buffering
+    @app.middleware("http")
+    async def add_sse_headers(request, call_next):
+        response = await call_next(request)
+        # Add headers to prevent reverse proxy buffering for SSE endpoints
+        if request.url.path in ["/sse", "/messages"]:
+            response.headers["X-Accel-Buffering"] = "no"
+            response.headers["Cache-Control"] = "no-cache"
+            if "Connection" not in response.headers:
+                response.headers["Connection"] = "keep-alive"
+        return response
+
     # Add health check endpoint
     async def health_check(request):
         return JSONResponse({"status": "healthy", "server": "mcp-research-server"})
@@ -264,7 +276,9 @@ if __name__ == "__main__":
     host = os.getenv("MCP_HOST", "0.0.0.0")
 
     logger.info(f"MCP SSE server starting on {host}:{port}")
-    logger.info(f"Connect via Tailscale: http://<your-tailscale-ip>:{port}/sse")
+    logger.info(f"Direct access: http://localhost:{port}/sse")
+    logger.info(f"Via Caddy+Tailscale: http://<your-tailscale-ip>/sse")
+    logger.info(f"Via MagicDNS+Caddy: https://<hostname>.<tailnet>.ts.net/sse")
     logger.info(f"MCP tools: search_web, scrape_url, get_domains, clean_database")
 
     mcp.run(transport="sse", host=host, port=port)

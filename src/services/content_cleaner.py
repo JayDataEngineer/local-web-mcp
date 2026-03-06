@@ -34,9 +34,9 @@ class ContentCleaner:
 
     Extraction priority (for getting clean HTML):
     1. CSS selector (if provided)
-    2. selectolax (fastest, finds <main>/<article>)
-    3. readability (Mozilla's algorithm, great for articles)
-    4. trafilatura (fallback for news/blogs)
+    2. readability (Mozilla's algorithm, great for articles)
+    3. trafilatura (fallback for news/blogs)
+    4. selectolax (fastest, finds <main>/<article>)
     5. BeautifulSoup basic (nuclear option)
 
     ALL extracted HTML is converted to markdown via markdownify,
@@ -77,22 +77,22 @@ class ContentCleaner:
             if html:
                 return html
 
-        # Priority 2: selectolax (fastest, finds main content areas)
-        if SELECTOLAX_AVAILABLE:
-            html = self._extract_with_selectolax(html_content)
-            if html:
-                return html
-
-        # Priority 3: readability (Mozilla's Readability algorithm)
+        # Priority 2: readability (Mozilla's Readability algorithm)
         if READABILITY_AVAILABLE:
             html = self._extract_with_readability(html_content)
             if html:
                 return html
 
-        # Priority 4: trafilatura (great for articles/blogs)
+        # Priority 3: trafilatura (great for articles/blogs)
         html = self._extract_with_trafilatura(html_content)
         if html:
             return html
+
+        # Priority 4: selectolax (fastest, finds main content areas)
+        if SELECTOLAX_AVAILABLE:
+            html = self._extract_with_selectolax(html_content)
+            if html:
+                return html
 
         # Priority 5: BeautifulSoup basic extraction
         return self._extract_basic(html_content)
