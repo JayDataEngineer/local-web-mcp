@@ -19,12 +19,12 @@ done
 # Check if we need to authenticate
 if ! tailscale status >/dev/null 2>&1; then
     echo "Tailscale not authenticated, starting with auth key..."
-    tailscale up --authkey=${TS_AUTHKEY} --hostname=mcp-server
+    tailscale up --authkey=${TS_AUTHKEY} --hostname=mcp-research-server
 fi
 
 # Wait for Funnel to be enabled
 echo "Enabling Tailscale Funnel..."
-tailscale funnel --https=443 --bg --ci=true http://127.0.0.1:80
+tailscale funnel --https=443 --bg --yes http://127.0.0.1:80
 
 # Keep the container running
 echo "Tailscale Funnel is running. Keeping container alive."

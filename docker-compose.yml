@@ -9,9 +9,6 @@ services:
     container_name: mcp-caddy
     restart: unless-stopped
     network_mode: host  # Host network so Tailscale Funnel can reach 127.0.0.1:80
-    environment:
-      - TAILNET_DOMAIN=${TAILNET_DOMAIN:-your-tailnet.ts.net}
-      - TAILNET_MACHINE_NAME=${TAILNET_MACHINE_NAME:-mcp-server}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -27,7 +24,7 @@ services:
     build: .
     container_name: mcp-server
     ports:
-      - "127.0.0.1:8000:8000"  # Expose to localhost for Caddy (host network)
+      - "8000:8000"  # Expose to all interfaces for tailnet access
     networks:
       - mcp_net
     volumes:
@@ -214,33 +211,7 @@ services:
         reservations:
           memory: 128M
 
-  # Tailscale Sidecar with Funnel
-  ts-sidecar:
-    image: tailscale/tailscale:latest
-    hostname: mcp-server
-    container_name: mcp-ts
-    privileged: true
-    network_mode: host
-    environment:
-      - TS_AUTHKEY=${TS_AUTHKEY:-}
-      - TS_STATE_DIR=/var/lib/tailscale
-      - TS_ARGS=--port=41641
-      - TS_SOCKET_DIR=/tmp/tailscale
-    volumes:
-      - ts-data:/var/lib/tailscale
-      - ts_socket:/tmp/tailscale
-      - ./scripts/funnel-entrypoint.sh:/script/funnel-entrypoint.sh:ro
-    command: /script/funnel-entrypoint.sh
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "sh", "-c", "tailscale status || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
 volumes:
   postgres-data:
-  ts-data:
   caddy_data:
   caddy_config:
-  ts_socket:  # Shared volume for Tailscale socket
