@@ -102,7 +102,7 @@ async def search(
 
     except Exception as e:
         logger.error(f"Search failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Search service unavailable")
 
 
 @app.post("/scrape")
@@ -153,7 +153,7 @@ async def scrape(
             }
         except Exception as e:
             logger.error(f"Celery task creation failed for {scrape_request.url}: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Task queue unavailable")
 
     # Blocking mode (wait=true or no Celery)
     if CELERY_AVAILABLE:
@@ -172,7 +172,7 @@ async def scrape(
             return ScrapeResponse(**result_dict)
         except Exception as e:
             logger.error(f"Celery scrape failed for {scrape_request.url}: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Scraping service unavailable")
     else:
         # Direct scraping
         scrape_svc = get_scrape_service()
@@ -180,8 +180,8 @@ async def scrape(
             result = await scrape_svc.scrape(scrape_request)
             return result
         except Exception as e:
-            logger.error(f"Scrape failed for {request.url}: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.error(f"Scrape failed for {scrape_request.url}: {e}")
+            raise HTTPException(status_code=500, detail="Scraping failed")
 
 
 @app.get("/status/{task_id}")
@@ -192,6 +192,11 @@ async def get_task_status(task_id: str):
     Returns task status and result if ready.
     Use with /scrape endpoint in async mode.
     """
+    import re
+    # Validate task_id format (Celery UUIDs are hex with dashes)
+    if not re.match(r'^[a-f0-9-]{36}$', task_id):
+        raise HTTPException(status_code=400, detail="Invalid task ID format")
+
     if not CELERY_AVAILABLE:
         raise HTTPException(status_code=501, detail="Celery not available")
 
@@ -212,7 +217,7 @@ async def get_task_status(task_id: str):
 
     except Exception as e:
         logger.error(f"Status check failed for {task_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Task status unavailable")
 
 
 @app.post("/clean")
@@ -234,7 +239,7 @@ async def clean_database():
 
     except Exception as e:
         logger.error(f"Clean failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Database operation failed")
 
 
 @app.post("/check", response_model=CheckResponse)
@@ -260,7 +265,7 @@ async def check_database(request: CheckRequest):
 
     except Exception as e:
         logger.error(f"Check failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Database check failed")
 
 
 @app.get("/domains")

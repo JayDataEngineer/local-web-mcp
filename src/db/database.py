@@ -49,7 +49,10 @@ class Database:
             port = port or os.getenv("POSTGRES_PORT", "5432")
             database = database or os.getenv("POSTGRES_DB", "mcp_server")
             user = user or os.getenv("POSTGRES_USER", "postgres")
-            password = password or os.getenv("POSTGRES_PASSWORD", "postgres")
+            # Require password from env or parameter - no default
+            password = password or os.getenv("POSTGRES_PASSWORD")
+            if not password:
+                raise ValueError("POSTGRES_PASSWORD environment variable must be set")
 
             self.db_url = f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
 

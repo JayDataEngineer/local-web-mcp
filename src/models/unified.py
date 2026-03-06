@@ -1,6 +1,6 @@
 """Unified data models for search and scrape results"""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 from typing import List, Optional, Literal
 from datetime import datetime
 from enum import Enum
@@ -34,9 +34,15 @@ class CombinedSearchResponse(BaseModel):
 
 
 class ScrapeRequest(BaseModel):
-    url: str
+    url: HttpUrl  # Validates URL format
     force_method: Optional[ScrapingMethod] = None
     css_selector: Optional[str] = Field(None, description="CSS selector for targeted content extraction")
+
+    @field_validator('url')
+    @classmethod
+    def validate_url(cls, v):
+        """Convert HttpUrl to string for compatibility"""
+        return str(v)
 
 
 class ScrapeResponse(BaseModel):
