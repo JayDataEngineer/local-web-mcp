@@ -365,22 +365,13 @@ async def scrape_with_fallback(
     logger.error(f"All scraping methods failed for {domain}")
     failure_result = await db.record_failure(domain, "both_failed")
 
-    if failure_result["blacklisted"]:
-        # Domain has now exceeded failure threshold and is blacklisted
-        return build_scrape_response(
-            success=False,
-            url=url,
-            method="blacklisted",
-            error=f"All scraping methods failed. Domain blacklisted after {failure_result['failure_count']} failures.",
-        )
-    else:
-        # Not yet blacklisted - return temporary failure
-        return build_scrape_response(
-            success=False,
-            url=url,
-            method="both_failed",
-            error=f"All scraping methods failed. Failure {failure_result['failure_count']}/3 before blacklist.",
-        )
+    # Return simple error - failure count is internal detail
+    return build_scrape_response(
+        success=False,
+        url=url,
+        method="both_failed",
+        error="All scraping methods failed. Try again later.",
+    )
 
 
 def normalize_reddit_url(url: str) -> str:
