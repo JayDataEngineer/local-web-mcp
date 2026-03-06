@@ -293,7 +293,7 @@ async def scrape_with_fallback(
     5. DB prefers selenium? → Try selenium first
     6. Try Crawl4AI
     7. Try Selenium (if Crawl4AI failed)
-    8. Blacklist if all failed
+    8. If both fail: record failure (blacklist after 3 failures)
 
     Args:
         url: URL to scrape
@@ -361,16 +361,26 @@ async def scrape_with_fallback(
         await db.record_success(domain, "selenium")
         return result
 
-    # Everything failed - blacklist
-    logger.error(f"All methods failed for {domain}, blacklisting")
-    await db.blacklist(domain)
+    # Everything failed - record failure (may blacklist after threshold)
+    logger.error(f"All scraping methods failed for {domain}")
+    failure_result = await db.record_failure(domain, "both_failed")
 
-    return build_scrape_response(
-        success=False,
-        url=url,
-        method="blacklisted",
-        error="All scraping methods failed",
-    )
+    if failure_result["blacklisted"]:
+        # Domain has now exceeded failure threshold and is blacklisted
+        return build_scrape_response(
+            success=False,
+            url=url,
+            method="blacklisted",
+            error=f"All scraping methods failed. Domain blacklisted after {failure_result['failure_count']} failures.",
+        )
+    else:
+        # Not yet blacklisted - return temporary failure
+        return build_scrape_response(
+            success=False,
+            url=url,
+            method="both_failed",
+            error=f"All scraping methods failed. Failure {failure_result['failure_count']}/3 before blacklist.",
+        )
 
 
 def normalize_reddit_url(url: str) -> str:

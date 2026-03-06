@@ -168,6 +168,57 @@ class Database:
             await session.commit()
             logger.warning(f"Blacklisted: {domain}")
 
+    async def record_failure(self, domain: str, method: str = "unknown") -> dict:
+        """Record a scrape failure and blacklist if threshold exceeded
+
+        Args:
+            domain: The domain that failed
+            method: The method that was attempted
+
+        Returns:
+            Dict with 'blacklisted' bool and 'failure_count' int
+        """
+        from .core.constants import BLACKLIST_FAILURE_THRESHOLD
+
+        async with self._get_session() as session:
+            result = await session.execute(
+                select(Domain).where(Domain.domain == domain)
+            )
+            db_domain = result.scalar_one_or_none()
+
+            if db_domain:
+                # Increment failure count
+                new_count = db_domain.failure_count + 1
+                db_domain.failure_count = new_count
+                db_domain.last_failure = datetime.now()
+
+                # Only blacklist if threshold exceeded
+                if new_count >= BLACKLIST_FAILURE_THRESHOLD:
+                    db_domain.is_blacklisted = True
+                    await session.commit()
+                    logger.warning(
+                        f"Blacklisted {domain} after {new_count} failures "
+                        f"(threshold: {BLACKLIST_FAILURE_THRESHOLD})"
+                    )
+                    return {"blacklisted": True, "failure_count": new_count}
+
+                await session.commit()
+                logger.debug(f"Failure {new_count}/{BLACKLIST_FAILURE_THRESHOLD} for {domain}")
+                return {"blacklisted": False, "failure_count": new_count}
+            else:
+                # New domain with failure - don't blacklist on first failure
+                new_domain = Domain(
+                    domain=domain,
+                    preferred_method="crawl4ai",
+                    failure_count=1,
+                    last_failure=datetime.now(),
+                    is_blacklisted=False,
+                )
+                session.add(new_domain)
+                await session.commit()
+                logger.debug(f"First failure recorded for {domain}")
+                return {"blacklisted": False, "failure_count": 1}
+
     async def is_blacklisted(self, domain: str) -> bool:
         """Check if domain is blacklisted"""
         async with self._get_session() as session:
