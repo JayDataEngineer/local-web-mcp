@@ -206,52 +206,6 @@ def _normalize_path(path: str) -> str:
     )
 
 
-def _extract_domain(url: str) -> str:
-    """Extract root domain from URL for allowlist checking.
-
-    Returns the root domain that should be used for fencing:
-    - 'python.langchain.com' → 'langchain.com' (allows all subdomains)
-    - 'langchain-ai.github.io' → 'langchain-ai.github.io' (github.io is public suffix)
-    - 'nextjs.org' → 'nextjs.org'
-
-    This allows fetching from any subdomain of the configured source.
-    """
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    netloc = parsed.netloc
-    # Remove port if present
-    if ":" in netloc:
-        netloc = netloc.split(":")[0]
-    # Remove www. prefix
-    if netloc.startswith("www."):
-        netloc = netloc[4:]
-
-    # Split into parts
-    parts = netloc.split(".")
-
-    # Known public suffixes that should be treated as TLDs
-    # These are domains where the "effective" TLD is more than one part
-    public_suffixes = {
-        "github.io", "gitlab.io", "bitbucket.io",
-        "vercel.app", "deno.dev", "workers.dev",
-        "pages.dev", "r2.dev", "firebaseapp.com",
-        "herokuapp.com", "netlify.app",
-    }
-
-    # For 3+ part domains, check if the last 2 parts form a public suffix
-    if len(parts) >= 3:
-        potential_suffix = ".".join(parts[-2:])
-        if potential_suffix in public_suffixes:
-            # Keep the 3-part domain (e.g., langchain-ai.github.io)
-            return ".".join(parts[-3:])
-
-    # For most domains, return the last 2 parts (e.g., langchain.com)
-    if len(parts) >= 2:
-        return ".".join(parts[-2:])
-
-    return netloc
-
-
 def _is_url_allowed(url: str, allowed_domains: set[str]) -> bool:
     """Check if a URL is from an allowed domain.
 
