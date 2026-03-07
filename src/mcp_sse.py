@@ -3,9 +3,13 @@
 This allows Claude Desktop or other MCP clients to connect over HTTP/SSE
 instead of stdio. Perfect for remote access via Tailscale.
 
-Tools:
+Web Research Tools:
 - search_web: Search using multiple search engines
 - scrape_url: Scrape URL with automatic method selection
+- map_domain: Discover URLs from sitemaps/Common Crawl
+- crawl_site: Deep crawl with BFS strategy
+- scrape_structured: Extract structured JSON data using pre-built schemas (NEW)
+- list_schemas: List available extraction schemas (NEW)
 - get_domains: List tracked domains with preferred methods
 - clean_database: Clear all domain tracking data
 
@@ -79,6 +83,7 @@ async def service_lifespan(server: FastMCP):
     """
     from .services.search_service import get_search_service
     from .services.scrape_service import get_scrape_service
+    from .services.crawl_service import get_map_crawl_service
     from .services.content_cleaner import get_content_cleaner
     from .services.cache_service import get_cache_service
     from .db.database import Database
@@ -86,6 +91,7 @@ async def service_lifespan(server: FastMCP):
     logger.info("Initializing services...")
     search_service = get_search_service()
     scrape_service = get_scrape_service()
+    crawl_service = get_map_crawl_service()
     cleaner = get_content_cleaner()
     cache = await get_cache_service()
     db = Database()
@@ -95,6 +101,7 @@ async def service_lifespan(server: FastMCP):
         yield {
             "search_service": search_service,
             "scrape_service": scrape_service,
+            "crawl_service": crawl_service,
             "cleaner": cleaner,
             "cache": cache,
             "db": db,
@@ -103,6 +110,7 @@ async def service_lifespan(server: FastMCP):
         logger.info("Shutting down services...")
         await search_service.close()
         await scrape_service.close()
+        await crawl_service.close()
         await db.close()
         logger.info("Shutdown complete")
 
@@ -121,8 +129,10 @@ except Exception as e:
 mcp = FastMCP(
     name="mcp-research-server",
     instructions=(
-        "Provides web search and URL scraping tools. "
-        "Use search_web to find information and scrape_url to extract content from pages. "
+        "Provides web research tools: search_web, scrape_url, map_domain, crawl_site, scrape_structured. "
+        "Use search_web to find information, scrape_url for single pages, "
+        "map_domain to discover URLs from sitemaps, crawl_site for deep crawling, "
+        "and scrape_structured for schema-based JSON extraction. "
         "The server learns which scraping method works best for each domain."
     ),
     lifespan=service_lifespan,
@@ -647,6 +657,12 @@ async def search_web(
     exclude_blacklist: Annotated[bool, Field(
         description="Exclude blacklisted domains from results"
     )] = True,
+    top_k: Annotated[int | None, Field(
+        description="Maximum number of results to return (None = all results)"
+    )] = None,
+    rerank: Annotated[bool, Field(
+        description="Apply flash re-ranking based on query relevance"
+    )] = False,
     ctx: Context | None = None
 ) -> dict:
     """Search the web using multiple search engines
@@ -655,6 +671,8 @@ async def search_web(
         query: Search query string (1-500 characters)
         pages: Number of search result pages to fetch, 1-10 (default: 10)
         exclude_blacklist: Exclude blacklisted domains from results
+        top_k: Maximum number of results to return (default: all results)
+        rerank: Apply flash re-ranking to prioritize relevant results
 
     Returns:
         Dictionary with query, total_results, and list of results
@@ -674,11 +692,15 @@ async def search_web(
     result = await search_svc.search(
         query=query,
         pages=pages,
-        exclude_blacklist=exclude_blacklist
+        exclude_blacklist=exclude_blacklist,
+        top_k=top_k,
+        rerank=rerank
     )
 
     if ctx:
         await ctx.info(f"Found {result.total_results} results")
+        if rerank:
+            await ctx.info("Results re-ranked by query relevance")
         if result.cached:
             await ctx.debug("Returned cached results")
 
@@ -689,6 +711,7 @@ async def search_web(
         "engines": result.engines,
         "search_time_ms": result.search_time_ms,
         "cached": result.cached,
+        "reranked": rerank,
         "results": [
             {"title": r.title, "url": r.url, "snippet": r.snippet}
             for r in result.results
@@ -705,6 +728,9 @@ async def scrape_url(
     css_selector: Annotated[str | None, Field(
         description="Optional CSS selector for targeted content extraction"
     )] = None,
+    text_only: Annotated[bool, Field(
+        description="Disable images for faster loading (Crawl4AI only)"
+    )] = False,
     ctx: Context | None = None
 ) -> dict:
     """Scrape a URL and extract clean markdown content
@@ -716,6 +742,7 @@ async def scrape_url(
         url: URL to scrape (must be a valid HTTP/HTTPS URL)
         method: Force specific scraping method (crawl4ai, selenium, pdf)
         css_selector: Optional CSS selector for targeted content extraction
+        text_only: Disable images for faster loading (Crawl4AI only)
 
     Returns:
         Dictionary with success status, title, content, and metadata
@@ -756,7 +783,8 @@ async def scrape_url(
         request = ScrapeRequest(
             url=url,
             force_method=ScrapingMethod(method) if method else None,
-            css_selector=css_selector
+            css_selector=css_selector,
+            text_only=text_only
         )
     except ValueError as e:
         raise ToolError(f"Invalid scraping method: {e}")
@@ -841,6 +869,363 @@ async def clean_database(ctx: Context | None = None) -> dict:
     }
 
 
+@mcp.tool()
+async def map_domain(
+    domain: Annotated[str, Field(
+        description="Domain to map (e.g., 'example.com' or 'https://example.com')",
+        min_length=3
+    )],
+    source: Annotated[Literal["sitemap", "cc", "sitemap+cc"], Field(
+        description="URL source: sitemap (fast), cc (Common Crawl), or sitemap+cc (both)"
+    )] = "sitemap+cc",
+    pattern: Annotated[str, Field(
+        description="URL pattern filter (e.g., '*/blog/*' for blog posts, '*' for all)"
+    )] = "*",
+    max_urls: Annotated[int, Field(
+        description="Maximum URLs to return (1-10000)"
+    )] = 1000,
+    extract_head: Annotated[bool, Field(
+        description="Extract metadata from <head> section (slower but richer)"
+    )] = False,
+    query: Annotated[str | None, Field(
+        description="Optional search query for BM25 relevance scoring"
+    )] = None,
+    score_threshold: Annotated[float | None, Field(
+        description="Minimum BM25 relevance score (0.0-1.0) when using query"
+    )] = None,
+    ctx: Context | None = None
+) -> dict:
+    """Discover URLs from a domain using sitemaps or Common Crawl
+
+    This is a URL DISCOVERY tool - it finds URLs without crawling them.
+    Use this BEFORE scraping to understand a site's structure.
+
+    WORKFLOW:
+    1. Call map_domain to discover URLs (e.g., all blog posts)
+    2. Filter URLs by pattern, metadata, or relevance score
+    3. Call scrape_url or crawl_site on selected URLs
+
+    USE CASES:
+    - Find all documentation pages: pattern="*/docs/*"
+    - Discover blog posts: pattern="*/blog/*"
+    - Find product pages: pattern="*/product/*"
+    - Relevance search: query="python tutorial" with score_threshold=0.3
+
+    SOURCES:
+    - sitemap: Fast XML sitemap parsing (100-1000 URLs/second)
+    - cc: Common Crawl dataset (50-500 URLs/second)
+    - sitemap+cc: Both sources for maximum coverage
+
+    Returns:
+        Dictionary with domain, total URLs found, and list of URLs with metadata
+
+    Note:
+        Results are NOT cached - each call performs fresh discovery.
+    """
+    from .services.crawl_service import MapConfig
+
+    if ctx:
+        await ctx.info(f"Mapping domain: {domain} (source={source})")
+
+    crawl_svc = ctx.lifespan_context.get("crawl_service")
+    if not crawl_svc:
+        raise ToolError("Crawl service not available")
+
+    config = MapConfig(
+        source=source,
+        pattern=pattern,
+        extract_head=extract_head,
+        max_urls=max_urls,
+        query=query,
+        scoring_method="bm25" if query else None,
+        score_threshold=score_threshold,
+        filter_nonsense=True,
+    )
+
+    result = await crawl_svc.map_domain(domain, config)
+
+    # Format output
+    urls_summary = []
+    for url_entry in result.urls[:50]:  # Limit output to first 50
+        url_info = {"url": url_entry.get("url", "")}
+        if url_entry.get("relevance_score") is not None:
+            url_info["score"] = round(url_entry["relevance_score"], 3)
+        if url_entry.get("head_data"):
+            head = url_entry["head_data"]
+            if head.get("title"):
+                url_info["title"] = head["title"]
+            if head.get("meta", {}).get("description"):
+                url_info["description"] = head["meta"]["description"][:100]
+        urls_summary.append(url_info)
+
+    if ctx:
+        await ctx.info(f"Discovered {result.valid_urls} valid URLs (total: {result.total_urls})")
+
+    return {
+        "domain": result.domain,
+        "source_used": result.source_used,
+        "total_urls": result.total_urls,
+        "valid_urls": result.valid_urls,
+        "urls": urls_summary,
+        "_note": f"Showing first {len(urls_summary)} URLs. Use smaller max_urls or pattern filters for targeted discovery." if result.valid_urls > 50 else "",
+    }
+
+
+@mcp.tool()
+async def crawl_site(
+    url: Annotated[str, Field(
+        description="Starting URL to crawl"
+    )],
+    max_depth: Annotated[int, Field(
+        description="Maximum depth to crawl (1-5)"
+    )] = 2,
+    max_pages: Annotated[int, Field(
+        description="Maximum pages to crawl (1-200)"
+    )] = 50,
+    include_external: Annotated[bool, Field(
+        description="Follow links to external domains"
+    )] = False,
+    pattern: Annotated[str | None, Field(
+        description="Optional URL pattern filter (e.g., '*/docs/*')"
+    )] = None,
+    word_count_threshold: Annotated[int, Field(
+        description="Minimum word count for pages (50-1000)"
+    )] = 100,
+    # Filter chain options
+    include_patterns: Annotated[list[str] | None, Field(
+        description="URL patterns to include (e.g., ['*api*', '*reference*'])"
+    )] = None,
+    exclude_patterns: Annotated[list[str] | None, Field(
+        description="URL patterns to exclude (e.g., ['*deprecated*', '*v1*'])"
+    )] = None,
+    # Best-First strategy options
+    strategy: Annotated[Literal["bfs", "best_first"], Field(
+        description="Crawling strategy: bfs (systematic) or best_first (prioritize relevant pages)"
+    )] = "bfs",
+    keywords: Annotated[list[str] | None, Field(
+        description="Keywords for relevance scoring (required for best_first strategy)"
+    )] = None,
+    ctx: Context | None = None
+) -> dict:
+    """Deep crawl a site following links (BFS or Best-First strategy)
+
+    This is a DEEP CRAWL tool - it discovers and crawls pages by following links.
+    Use this AFTER map_domain when you need actual page content.
+
+    WORKFLOW:
+    1. Call map_domain to discover URLs (optional but recommended)
+    2. Call crawl_site with starting URL to crawl linked pages
+    3. Review crawled pages and extract specific URLs of interest
+
+    STRATEGIES:
+    - bfs (default): Systematic breadth-first exploration
+    - best_first: Prioritize pages matching keywords (requires keywords parameter)
+
+    FILTERING:
+    - pattern: Simple URL pattern (e.g., '*/docs/*')
+    - include_patterns: Multiple patterns to include (e.g., ['*api*', '*reference*'])
+    - exclude_patterns: Multiple patterns to exclude (e.g., ['*deprecated*', '*v1*'])
+
+    USE CASES:
+    - Crawl documentation with filters: url="https://docs.example.com", include_patterns=["*api*"]
+    - Best-First for specific topics: url="https://docs.example.com", strategy="best_first", keywords=["api", "tutorial"]
+    - Exclude old versions: url="https://docs.example.com", exclude_patterns=["*v1*", "*deprecated*"]
+
+    Returns:
+        Dictionary with crawl stats and list of crawled pages with content
+
+    Warning:
+        Deep crawling is resource-intensive. Start with low max_depth (2)
+        and max_pages (20) for testing, then increase as needed.
+
+    Note:
+        Results are NOT cached due to dynamic nature of link discovery.
+    """
+    from .services.crawl_service import CrawlConfig
+
+    # Validate URL
+    if not url.startswith(("http://", "https://")):
+        raise ToolError("URL must start with http:// or https://")
+
+    # Security: Check for blacklisted URLs
+    if _is_url_blacklisted(url):
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        raise ToolError(
+            f"URL is not allowed for security reasons: {parsed.netloc} "
+            f"appears to be a private or internal address."
+        )
+
+    if ctx:
+        await ctx.info(f"Deep crawling: {url} (strategy={strategy}, max_depth={max_depth}, max_pages={max_pages})")
+
+    crawl_svc = ctx.lifespan_context.get("crawl_service")
+    if not crawl_svc:
+        raise ToolError("Crawl service not available")
+
+    # Validate best_first requires keywords
+    if strategy == "best_first" and not keywords:
+        raise ToolError("best_first strategy requires keywords parameter")
+
+    config = CrawlConfig(
+        max_depth=max_depth,
+        max_pages=max_pages,
+        include_external=include_external,
+        pattern=pattern,
+        only_text=True,
+        word_count_threshold=word_count_threshold,
+        include_patterns=include_patterns,
+        exclude_patterns=exclude_patterns,
+        strategy=strategy,
+        keywords=keywords,
+    )
+
+    result = await crawl_svc.crawl_site(url, config)
+
+    # Format output - limit content size
+    pages_summary = []
+    for page in result.pages:
+        page_info = {
+            "url": page["url"],
+            "success": page["success"],
+            "depth": page.get("depth", 0),
+        }
+        if page.get("title"):
+            page_info["title"] = page["title"]
+        if page.get("content"):
+            content = page["content"]
+            # Truncate long content
+            if len(content) > 2000:
+                page_info["content"] = content[:2000] + f"... (truncated, was {len(content)} chars)"
+                page_info["truncated"] = True
+            else:
+                page_info["content"] = content
+        pages_summary.append(page_info)
+
+    if ctx:
+        await ctx.info(f"Crawled {result.total_crawled} pages ({result.successful} successful, {result.failed} failed)")
+
+    return {
+        "start_url": url,
+        "total_crawled": result.total_crawled,
+        "successful": result.successful,
+        "failed": result.failed,
+        "pages": pages_summary,
+    }
+
+
+@mcp.tool()
+async def scrape_structured(
+    url: Annotated[str, Field(description="URL to scrape with structured extraction")],
+    schema_type: Annotated[Literal["ecommerce", "news", "jobs", "blog", "social", "products"], Field(
+        description="Pre-built schema type for extraction"
+    )] = "ecommerce",
+    custom_selector: Annotated[str | None, Field(
+        description="Custom CSS selector to override the base selector"
+    )] = None,
+    bypass_cache: Annotated[bool, Field(
+        description="Bypass cache and fetch fresh data"
+    )] = True,
+    ctx: Context | None = None
+) -> dict:
+    """Scrape a URL and extract structured data using schema-based extraction
+
+    This tool uses pre-built CSS extraction schemas to extract structured
+    JSON data from web pages WITHOUT using LLMs. Much faster and cheaper
+    than LLM-based extraction.
+
+    SCHEMA TYPES:
+    - ecommerce: Products (name, price, rating, availability, image, url)
+    - news: Articles (headline, author, date, content, category, summary)
+    - jobs: Listings (title, company, location, salary, description)
+    - blog: Posts (title, author, date, content, tags, excerpt)
+    - social: Social posts (username, content, timestamp, likes, shares)
+    - products: Product catalog multi-item extraction
+
+    WORKFLOW:
+    1. Choose the appropriate schema_type for your target page
+    2. Optional: Provide custom_selector to target specific container
+    3. Tool returns structured JSON array with extracted items
+
+    VS scrape_url:
+    - scrape_url: Returns full page content as markdown
+    - scrape_structured: Returns structured JSON data for specific elements
+
+    Returns:
+        Dictionary with extracted items as JSON array
+
+    Note:
+        Results are NOT cached by default (bypass_cache=True) since
+        structured data changes frequently.
+    """
+    from .services.crawl_service import StructuredScrapeConfig
+
+    # Validate URL
+    if not url.startswith(("http://", "https://")):
+        raise ToolError("URL must start with http:// or https://")
+
+    # Security: Check for blacklisted URLs
+    if _is_url_blacklisted(url):
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        raise ToolError(
+            f"URL is not allowed for security reasons: {parsed.netloc} "
+            f"appears to be a private or internal address."
+        )
+
+    if ctx:
+        await ctx.info(f"Structured scraping: {url} (schema={schema_type})")
+
+    crawl_svc = ctx.lifespan_context.get("crawl_service")
+    if not crawl_svc:
+        raise ToolError("Crawl service not available")
+
+    config = StructuredScrapeConfig(
+        schema_type=schema_type,
+        custom_selector=custom_selector,
+        bypass_cache=bypass_cache,
+    )
+
+    result = await crawl_svc.scrape_structured(url, config)
+
+    if ctx:
+        if result.success:
+            await ctx.info(f"Extracted {result.item_count} items")
+        else:
+            await ctx.error(f"Extraction failed: {result.error}")
+
+    return {
+        "url": result.url,
+        "success": result.success,
+        "schema_type": result.schema_type,
+        "item_count": result.item_count,
+        "items": result.items,
+        "title": result.title,
+        "error": result.error,
+    }
+
+
+@mcp.tool()
+async def list_schemas(ctx: Context | None = None) -> dict:
+    """List all available structured extraction schemas
+
+    Returns information about pre-built schemas available for
+    scrape_structured, including field counts and descriptions.
+
+    Returns:
+        Dictionary with list of available schemas
+    """
+    from .services.extraction_schemas import list_schemas
+
+    schemas = list_schemas()
+
+    return {
+        "total": len(schemas),
+        "schemas": schemas,
+        "usage": "Use scrape_structured with schema_type parameter",
+    }
+
+
 # ========== SERVER ENTRY POINT ==========
 
 if __name__ == "__main__":
@@ -853,7 +1238,7 @@ if __name__ == "__main__":
     logger.info(f"Via MagicDNS+Caddy: https://<hostname>.<tailnet>.ts.net/sse")
     logger.info(f"Session state: Redis @ {REDIS_HOST}:{REDIS_PORT}")
     logger.info(f"Caching: enabled (search: {SEARCH_CACHE_TTL}s, scrape: {SCRAPE_CACHE_TTL}s)")
-    logger.info(f"Web tools: search_web, scrape_url, get_domains, clean_database")
+    logger.info(f"Web tools: search_web, scrape_url, map_domain, crawl_site, scrape_structured, list_schemas, get_domains, clean_database")
     logger.info(f"Docs tools: docs_list_sources, docs_fetch_docs")
 
     mcp.run(transport="sse", host=host, port=port)

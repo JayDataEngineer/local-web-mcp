@@ -136,6 +136,10 @@ Any MCP-compatible client can connect via SSE transport to your Tailscale HTTPS 
 |------|-------------|
 | `search_web` | Search the web using multiple search engines |
 | `scrape_url` | Scrape a URL and extract clean markdown |
+| `map_domain` | Discover URLs from sitemaps/Common Crawl (URL discovery) |
+| `crawl_site` | Deep crawl with BFS strategy (follows links) |
+| `scrape_structured` | Extract structured JSON data using pre-built schemas |
+| `list_schemas` | List available extraction schemas |
 | `get_domains` | List tracked domains with preferred methods |
 | `clean_database` | Clear all domain tracking data |
 
@@ -145,6 +149,131 @@ Any MCP-compatible client can connect via SSE transport to your Tailscale HTTPS 
 |------|-------------|
 | `docs_list_sources` | List available documentation libraries |
 | `docs_fetch_docs` | Fetch documentation from any URL (cached, cleaned to Markdown) |
+
+---
+
+## Structured Data Extraction
+
+The `scrape_structured` tool extracts structured JSON from web pages using pre-built CSS schemas—no LLM required, much faster and cheaper.
+
+### Schema Types
+
+| Schema | Extracts |
+|--------|----------|
+| `ecommerce` | Products (name, price, rating, availability, image, url, sku) |
+| `news` | Articles (headline, author, date, content, category, summary) |
+| `jobs` | Listings (title, company, location, salary, description, type) |
+| `blog` | Posts (title, author, date, content, tags, excerpt) |
+| `social` | Social posts (username, content, timestamp, likes, shares) |
+| `products` | Product catalog multi-item extraction |
+
+### Usage Examples
+
+```python
+# Extract products from an e-commerce page
+scrape_structured(
+    url="https://shop.example.com/products",
+    schema_type="ecommerce"
+)
+# Returns: {"items": [{"title": "...", "price": "$99", "rating": "4.5", ...}]}
+
+# Extract job listings
+scrape_structured(
+    url="https://jobs.example.com",
+    schema_type="jobs"
+)
+# Returns: {"items": [{"title": "Engineer", "company": "...", "salary": "...", ...}]}
+
+# Extract with custom selector
+scrape_structured(
+    url="https://news.example.com",
+    schema_type="news",
+    custom_selector=".article-list article"  # Override base selector
+)
+```
+
+### When to Use scrape_structured vs scrape_url
+
+| Use scrape_structured when... | Use scrape_url when... |
+|-------------------------------|------------------------|
+| You need structured JSON data | You need full page content |
+| Extracting specific fields (products, jobs) | Reading articles, documentation |
+| Building datasets/analysis | General purpose scraping |
+| Page has consistent structure | Page structure is unknown |
+
+---
+
+## Map and Crawl Workflow
+
+The new `map_domain` and `crawl_site` tools enable intelligent site exploration:
+
+### 1. Map Domain (URL Discovery)
+
+```python
+# Discover all blog posts from a site
+map_domain(
+    domain="blog.example.com",
+    source="sitemap",           # or "cc" for Common Crawl, "sitemap+cc" for both
+    pattern="*/posts/*",        # Filter by URL pattern
+    max_urls=1000,              # Maximum URLs to return
+    extract_head=True           # Extract metadata (slower but richer)
+)
+
+# Relevance-based discovery
+map_domain(
+    domain="docs.example.com",
+    source="sitemap",
+    query="API reference endpoints",
+    score_threshold=0.5,        # Minimum BM25 relevance score
+    scoring_method="bm25"
+)
+```
+
+**Sources:**
+- `sitemap`: Fast XML sitemap parsing (100-1000 URLs/second)
+- `cc`: Common Crawl dataset (historical index)
+- `sitemap+cc`: Both sources for maximum coverage
+
+### 2. Crawl Site (Deep Crawling)
+
+```python
+# Crawl documentation with depth limit
+crawl_site(
+    url="https://docs.example.com",
+    max_depth=2,                # Follow links 2 levels deep
+    max_pages=50,               # Maximum pages to crawl
+    pattern="*/api/*",          # Filter by URL pattern
+    word_count_threshold=100    # Skip short pages
+)
+```
+
+**Strategy:**
+- BFS (Breadth-First Search) for systematic exploration
+- Respects `max_depth` (link levels) and `max_pages` (total pages)
+- Can filter by URL pattern and word count
+- Returns full content for each crawled page
+
+### Typical Workflow
+
+```python
+# Step 1: Discover URLs
+result = map_domain(domain="python.langchain.com", pattern="*/docs/*")
+
+# Step 2: Review discovered URLs
+for url_info in result["urls"]:
+    print(url_info["url"], url_info.get("title", ""))
+
+# Step 3: Deep crawl for full content
+crawl_result = crawl_site(
+    url="https://python.langchain.com/docs/",
+    max_depth=2,
+    max_pages=20
+)
+
+# Step 4: Process crawled pages
+for page in crawl_result["pages"]:
+    print(page["title"], len(page.get("content", "")))
+```
 
 ---
 
@@ -280,7 +409,7 @@ Add more in `docs_config.yaml`. Domains linked in llms.txt files are automatical
 - **PostgreSQL** - Domain tracking and learning
 - **Celery + Redis** - Task queue and rate limiting
 - **SearXNG** - Multi-engine search
-- **Crawl4AI** - Fast JS-enabled scraping
+- **Crawl4AI** - Fast JS-enabled scraping, URL seeding, and deep crawling
 - **SeleniumBase** - Stealth scraping fallback
 - **ContentCleaner** - Multi-strategy HTML→Markdown conversion
 - **Tailscale** - VPN + MagicDNS

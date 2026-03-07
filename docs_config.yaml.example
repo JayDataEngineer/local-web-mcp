@@ -1,0 +1,43 @@
+# Documentation Sources Configuration
+# Add your llms.txt URLs here - see https://llmstxt.org for format
+
+# Example sources:
+# - name: Anthropic
+#   llms_txt: https://docs.anthropic.com/en/llms.txt
+# - name: SQLAlchemy
+#   llms_txt: https://docs.sqlalchemy.org/en/stable/llms.txt
+
+# ========== PRODUCTION SOURCES (your actual sources) ==========
+- name: LangGraph
+  llms_txt: https://langchain-ai.github.io/langgraph/llms.txt
+
+- name: LangChain
+  llms_txt: https://python.langchain.com/llms.txt
+
+- name: DeepAgents
+  llms_txt: https://python.langchain.com/llms.txt
+
+- name: FastAPI
+  llms_txt: https://fastapi.tiangolo.com/llms.txt
+
+- name: Pydantic
+  llms_txt: https://docs.pydantic.dev/llms.txt
+
+- name: FastMCP
+  llms_txt: https://gofastmcp.com/llms.txt
+
+- name: Docker
+  llms_txt: https://docs.docker.com/llms.txt
+
+- name: Next.js
+  llms_txt: https://nextjs.org/llms.txt
+
+- name: Vercel AI
+  llms_txt: https://ai-sdk.dev/llms.txt
+
+# ========== LOCAL SOURCES ==========
+# For sites that don't have llms.txt, create your own locally
+# Place files in /app/docs_local/ or use absolute paths
+
+# - name: MyProject
+#   llms_txt: /app/docs_local/myproject_llms.txt

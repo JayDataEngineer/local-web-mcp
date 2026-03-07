@@ -87,7 +87,8 @@ class UnifiedScrapeService:
                 cleaner=self.cleaner,
                 db=db,
                 force_method=request.force_method.value if request.force_method else None,
-                css_selector=request.css_selector
+                css_selector=request.css_selector,
+                text_only=request.text_only
             )
 
             response = self._dict_to_response(result_dict)

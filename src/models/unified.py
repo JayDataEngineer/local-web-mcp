@@ -37,6 +37,7 @@ class ScrapeRequest(BaseModel):
     url: HttpUrl  # Validates URL format
     force_method: Optional[ScrapingMethod] = None
     css_selector: Optional[str] = Field(None, description="CSS selector for targeted content extraction")
+    text_only: bool = Field(False, description="Disable images for faster loading")
 
     @field_validator('url')
     @classmethod

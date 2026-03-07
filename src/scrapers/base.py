@@ -60,7 +60,7 @@ def build_error_response(url: str, method: str, error) -> dict:
     }
 
 
-async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None) -> dict:
+async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only: bool = False) -> dict:
     """
     Scrape using Crawl4AI (fast, JS-enabled)
 
@@ -68,13 +68,23 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None) -> dict:
         url: URL to scrape
         cleaner: ContentCleaner instance
         css_selector: Optional CSS selector for targeted extraction
+        text_only: If True, disable images for faster loading
 
     Returns dict with keys: success, url, domain, method_used, title, content, metadata, error
     """
     try:
-        from crawl4ai import AsyncWebCrawler
+        from crawl4ai import AsyncWebCrawler, BrowserConfig
 
-        async with AsyncWebCrawler(verbose=False) as crawler:
+        # Build browser config with text mode if requested
+        browser_config = None
+        if text_only:
+            browser_config = BrowserConfig(
+                headless=True,
+                text_mode=True,  # Disable images for speed
+                verbose=False
+            )
+
+        async with AsyncWebCrawler(config=browser_config, verbose=False) as crawler:
             result = await crawler.arun(
                 url=url,
                 word_count_threshold=CRAWL4AI_WORD_COUNT_THRESHOLD,
@@ -292,7 +302,8 @@ async def scrape_with_fallback(
     cleaner,
     db: Any,
     force_method: str | None = None,
-    css_selector: str | None = None
+    css_selector: str | None = None,
+    text_only: bool = False
 ) -> dict:
     """
     Main scraping routing logic with fallback chain
@@ -315,6 +326,7 @@ async def scrape_with_fallback(
         db: Database instance
         force_method: Force specific scraping method
         css_selector: Optional CSS selector for targeted extraction
+        text_only: If True, disable images for faster loading
 
     Returns dict response
     """
@@ -347,7 +359,7 @@ async def scrape_with_fallback(
 
     # Force method? → Use it directly without retries
     if force_method:
-        return await _scrape_with_method(url, force_method, cleaner, css_selector)
+        return await _scrape_with_method(url, force_method, cleaner, css_selector, text_only)
 
     # Check database for preferred method
     preferred = await db.get_domain_method(domain)
@@ -376,7 +388,7 @@ async def scrape_with_fallback(
     # Try Crawl4AI with retries (always try unless already succeeded)
     for attempt in range(1, CRAWL4AI_RETRY_COUNT + 1):
         logger.info(f"Crawl4AI attempt {attempt}/{CRAWL4AI_RETRY_COUNT} for {url}")
-        result = await scrape_crawl4ai(url, cleaner, css_selector)
+        result = await scrape_crawl4ai(url, cleaner, css_selector, text_only)
         if result["success"]:
             await db.record_success(domain, "crawl4ai")
             return result
@@ -502,10 +514,10 @@ def format_reddit_content(url: str, data: dict) -> tuple[str, str]:
     return content, title or data.get("data", {}).get("title", "Reddit Thread") if isinstance(data, dict) else "Reddit Thread"
 
 
-async def _scrape_with_method(url: str, method: str, cleaner, css_selector: str = None) -> dict:
+async def _scrape_with_method(url: str, method: str, cleaner, css_selector: str = None, text_only: bool = False) -> dict:
     """Scrape using specific method"""
     if method == "crawl4ai":
-        return await scrape_crawl4ai(url, cleaner, css_selector)
+        return await scrape_crawl4ai(url, cleaner, css_selector, text_only)
     elif method == "selenium":
         return await scrape_selenium(url, cleaner, css_selector)
     elif method == "reddit_api":
