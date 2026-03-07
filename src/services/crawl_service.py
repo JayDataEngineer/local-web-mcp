@@ -292,14 +292,14 @@ class MapCrawlService:
                 if config.include_patterns:
                     filters.append(URLPatternFilter(
                         patterns=config.include_patterns,
-                        pattern_type="glob",
-                        negate=False
+                        use_glob=True,
+                        reverse=False  # include these patterns
                     ))
                 if config.exclude_patterns:
                     filters.append(URLPatternFilter(
                         patterns=config.exclude_patterns,
-                        pattern_type="glob",
-                        negate=True
+                        use_glob=True,
+                        reverse=True  # exclude these patterns
                     ))
                 if filters:
                     filter_chain = FilterChain(filters)
