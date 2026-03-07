@@ -30,14 +30,19 @@ class ContentCleaner:
     """
     Clean HTML to produce LLM-ready markdown
 
-    STRATEGY: Multiple extractors, ONE markdown converter (markdownify)
+    STRATEGY: Waterfall extraction with ONE markdown converter (markdownify)
 
     Extraction priority (for getting clean HTML):
-    1. CSS selector (if provided)
-    2. readability (Mozilla's algorithm, great for articles)
-    3. trafilatura (fallback for news/blogs)
-    4. selectolax (fastest, finds <main>/<article>)
-    5. BeautifulSoup basic (nuclear option)
+    1. CSS selector (if provided) - user override
+    2. WATERFALL (selectolax aggressive pruning) - universal scraper, works on ALL pages
+       - Aggressive junk tag removal (script, style, nav, footer, form, etc.)
+       - Semantic targeting (<main>, <article>, #content)
+       - Full body fallback for SPA/SaaS sites
+    3. trafilatura (article-only fallback for news/blogs)
+    4. BeautifulSoup basic (nuclear option)
+
+    The WATERFALL method handles modern web pages (SaaS, landing pages, React apps)
+    that fail with article-biased extractors like readability/trafilatura.
 
     ALL extracted HTML is converted to markdown via markdownify,
     ensuring CONSISTENT output format regardless of which extractor succeeds.
@@ -69,35 +74,34 @@ class ContentCleaner:
         return self._html_to_consistent_markdown(core_html)
 
     def _extract_core_html(self, html_content: str, css_selector: str = None) -> Optional[str]:
-        """Extract core content HTML using best available parser"""
+        """
+        Extract core content HTML using Waterfall Strategy
+
+        The Waterfall handles ALL page types (articles, SaaS, landing pages, SPAs)
+        by aggressively pruning junk tags then finding semantic wrappers.
+        """
 
         # Minimum length for meaningful content (prevents returning near-empty HTML)
         MIN_CONTENT_HTML_LENGTH = 100
 
-        # Priority 1: CSS selector (if provided)
+        # Priority 1: CSS selector (if provided) - user override
         if css_selector:
             html = self._extract_by_css_selector(html_content, css_selector)
             if html and len(html) > MIN_CONTENT_HTML_LENGTH:
                 return html
 
-        # Priority 2: readability (Mozilla's Readability algorithm)
-        if READABILITY_AVAILABLE:
-            html = self._extract_with_readability(html_content)
+        # Priority 2: WATERFALL (universal scraper - works on everything)
+        if SELECTOLAX_AVAILABLE:
+            html = self._extract_with_waterfall(html_content)
             if html and len(html) > MIN_CONTENT_HTML_LENGTH:
                 return html
 
-        # Priority 3: trafilatura (great for articles/blogs)
+        # Priority 3: trafilatura (article-only fallback for news/blogs)
         html = self._extract_with_trafilatura(html_content)
         if html and len(html) > MIN_CONTENT_HTML_LENGTH:
             return html
 
-        # Priority 4: selectolax (fastest, finds main content areas)
-        if SELECTOLAX_AVAILABLE:
-            html = self._extract_with_selectolax(html_content)
-            if html and len(html) > MIN_CONTENT_HTML_LENGTH:
-                return html
-
-        # Priority 5: BeautifulSoup basic extraction (always return this as fallback)
+        # Priority 4: BeautifulSoup basic extraction (nuclear option)
         return self._extract_basic(html_content)
 
     def _html_to_consistent_markdown(self, html: str) -> str:
@@ -111,18 +115,21 @@ class ContentCleaner:
             soup = BeautifulSoup(html, "html.parser")
 
             # Brutally remove all noise that shouldn't be in markdown
-            for tag in soup(["script", "style", "noscript", "iframe", "svg", "nav", "footer"]):
+            # Match the aggressive pruning from Waterfall strategy
+            junk_tags = [
+                "script", "style", "noscript", "iframe", "svg", "nav", "footer",
+                "header", "aside", "form", "meta"
+            ]
+            for tag in soup(junk_tags):
                 tag.decompose()
 
             # Convert to markdown with consistent settings
             # Note: Pass HTML string, not BeautifulSoup object
+            # Don't limit convert - let markdownify handle all tags naturally
             markdown = md(
                 str(soup),  # Convert soup to string first
                 heading_style="ATX",  # # ## ### style (not underline)
-                strip_comments=True,
-                convert=["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li",
-                        "strong", "em", "a", "blockquote", "pre", "code", "hr", "br",
-                        "table", "thead", "tbody", "tr", "th", "td"]
+                strip_comments=True
             )
 
             # Normalize whitespace
@@ -151,6 +158,63 @@ class ContentCleaner:
         return '\n\n'.join(lines)
 
     # ========== EXTRACTION METHODS (HTML output only) ==========
+
+    def _extract_with_waterfall(self, html_content: str) -> Optional[str]:
+        """
+        WATERFALL STRATEGY: Universal scraper for ALL page types
+
+        This handles:
+        - Articles & blogs (like Trafilatura)
+        - SaaS landing pages (Anthropic, Stripe)
+        - Corporate sites
+        - React/SPA dashboards
+        - E-commerce pages
+
+        Process:
+        1. Aggressive junk tag removal (script, style, nav, footer, form, etc.)
+        2. Semantic targeting (<main>, <article>, #content)
+        3. Full body fallback for chaotic layouts
+
+        Returns HTML string for markdownify conversion.
+        """
+        try:
+            parser = HTMLParser(html_content)
+
+            # Step 1: Aggressive junk tag removal
+            # These tags provide zero value to LLMs or databases
+            junk_tags = [
+                "script", "style", "noscript", "svg", "header",
+                "footer", "nav", "aside", "form", "iframe", "meta"
+            ]
+
+            for tag_name in junk_tags:
+                for node in parser.tags(tag_name):
+                    node.decompose()
+
+            # Step 2: Semantic targeting - find the main content area
+            # Look for explicit HTML5 semantic wrappers first
+            main_node = (
+                parser.css_first("main") or
+                parser.css_first("article") or
+                parser.css_first("#content") or
+                parser.css_first(".content") or
+                parser.css_first("[role='main']")
+            )
+
+            # Step 3: Full body fallback
+            # If no semantic tags found (old sites, poorly coded SPAs),
+            # use the entire cleaned body
+            if main_node:
+                clean_html = main_node.html
+            else:
+                body_node = parser.css_first("body")
+                clean_html = body_node.html if body_node else parser.html
+
+            return clean_html
+
+        except Exception as e:
+            logger.debug(f"Waterfall extraction failed: {e}")
+            return None
 
     def _extract_by_css_selector(self, html_content: str, css_selector: str) -> Optional[str]:
         """Extract HTML using CSS selector"""

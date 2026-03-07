@@ -1,0 +1,33 @@
+services:
+  ts-sidecar:
+    image: tailscale/tailscale:latest
+    container_name: mcp-ts
+    hostname: mcp-research-server
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - /var/lib/tailscale:/var/lib/tailscale:ro
+      - /run/tailscale:/run/tailscale:ro
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+    restart: unless-stopped
+    command:
+      - /bin/sh
+      - -c
+      - |
+        echo 'Waiting for host Tailscale...'
+        for i in $$(seq 1 60); do
+          if tailscale status >/dev/null 2>&1; then
+            echo 'Host Tailscale is ready!'
+            tailscale status
+            echo 'Setting up Funnel to forward to localhost:8000...'
+            tailscale funnel --https=443 --bg --yes http://127.0.0.1:8000
+            echo 'Funnel is running!'
+            tailscale funnel status
+            tail -f /dev/null
+          fi
+          echo "Waiting... ($$i/60)"
+          sleep 1
+        done
+        echo 'Timed out waiting for Tailscale'
