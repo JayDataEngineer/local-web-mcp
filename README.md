@@ -208,18 +208,21 @@ DOCS_CACHE_TTL=3600
 4. PDF? → Extract text with PyMuPDF
 5. Reddit? → Use Reddit JSON API
 6. Check Database → Use learned preference
-7. Try Crawl4AI (fast, JS-enabled)
-8. If failed → Try Selenium (stealth mode)
+7. Try Crawl4AI (3x retry, fast, JS-enabled)
+8. If failed → Try Selenium (3x retry, stealth mode)
 9. If both failed → Blacklist domain
-10. Clean HTML → ContentCleaner with priority extraction
+10. Clean HTML → Waterfall strategy for universal scraping
 ```
 
-**Content Extraction Priority:**
+**Content Extraction Priority (Waterfall Strategy):**
 1. CSS selector (if provided)
-2. Readability (Mozilla's article extractor)
-3. Trafilatura (news/blog optimized)
-4. Selectolax (fast `<main>/<article>` finder)
-5. BeautifulSoup (nuclear option)
+2. **Waterfall** (Selectolax aggressive pruning + semantic targeting)
+   - Works on ALL page types: articles, SaaS, landing pages, SPAs
+   - Aggressive junk tag removal (script, style, nav, footer, form, etc.)
+   - Semantic targeting (`<main>`, `<article>`, `#content`)
+   - Full body fallback for chaotic layouts
+3. Trafilatura (article-only fallback for news/blogs)
+4. BeautifulSoup (nuclear option)
 
 ---
 
@@ -257,16 +260,16 @@ Cached responses include metadata (method used, timestamp) and bypass expensive 
 The server includes official documentation for:
 
 - **LangGraph** - Agent framework
-- **LangChain** - LLM framework
+- **LangChain** - LLM framework (python.langchain.com, docs.langchain.com)
 - **DeepAgents** - LangChain agent patterns
 - **FastAPI** - Web framework
-- **Pydantic** - Data validation
-- **FastMCP** - MCP framework
+- **Pydantic** - Data validation (docs.pydantic.dev, ai.pydantic.dev)
+- **FastMCP** - MCP framework (gofastmcp.com)
 - **Docker** - Container platform
 - **Next.js** - React framework
-- **Vercel AI** - AI SDK for React
+- **Vercel AI** - AI SDK for React (ai-sdk.dev)
 
-Add more in `docs_config.yaml`.
+Add more in `docs_config.yaml`. Domains linked in llms.txt files are automatically discovered and allowed.
 
 ---
 
