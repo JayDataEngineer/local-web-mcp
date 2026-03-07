@@ -102,7 +102,9 @@ RUN mkdir -p /app/data
 
 # Add venv to PATH
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PYTHONWARNINGS=ignore::RequestsDependencyWarning \
+    PYTHONWARNINGS=ignore::DeprecationWarning
 
 EXPOSE 8000
 
