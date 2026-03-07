@@ -15,6 +15,9 @@
 - name: LangChain
   llms_txt: https://python.langchain.com/llms.txt
 
+- name: LangChain Docs
+  llms_txt: https://docs.langchain.com/llms.txt
+
 - name: DeepAgents
   llms_txt: https://python.langchain.com/llms.txt
 
