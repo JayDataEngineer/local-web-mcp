@@ -206,11 +206,40 @@ def _normalize_path(path: str) -> str:
     )
 
 
-def _is_url_allowed(url: str, allowed_domains: set[str]) -> bool:
+# Session-level storage for dynamically discovered domains
+_session_allowed_domains: set[str] = set()
+
+def _add_domains_from_content(content: str, base_url: str) -> None:
+    """Extract domains from markdown links and add to session allowlist."""
+    import re
+    from urllib.parse import urlparse
+
+    # Extract markdown links: [text](url) or [text](url "title")
+    link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'
+    base_parsed = urlparse(base_url)
+    base_domain = base_parsed.netloc.replace("www.", "")
+
+    for match in re.finditer(link_pattern, content):
+        url = match.group(2).split()[0]  # Remove trailing "title" if present
+        try:
+            parsed = urlparse(url)
+            if parsed.netloc:
+                domain = parsed.netloc.replace("www.", "")
+                # Only add external domains (not the same as base)
+                if domain != base_domain and domain not in _session_allowed_domains:
+                    _session_allowed_domains.add(domain)
+                    logger.debug(f"Added discovered domain to allowlist: {domain}")
+        except:
+            pass
+
+
+def _is_url_allowed(url: str, configured_domains: set[str]) -> bool:
     """Check if a URL is from an allowed domain.
 
-    Allows subdomains of configured domains. For example, if
-    'langchain-ai.github.io' is allowed, then 'langchain-ai.github.io/langgraph/xyz' is also allowed.
+    Allows:
+    - Exact matches with configured domains
+    - Subdomains of configured domains
+    - Session-discovered domains (from llms.txt content)
     """
     from urllib.parse import urlparse
     parsed = urlparse(url)
@@ -223,8 +252,11 @@ def _is_url_allowed(url: str, allowed_domains: set[str]) -> bool:
     # Remove www. prefix for checking
     check_netloc = netloc[4:] if netloc.startswith("www.") else netloc
 
+    # Combine configured + session-discovered domains
+    all_allowed = configured_domains | _session_allowed_domains
+
     # Check exact match or if requested domain is a subdomain of allowed
-    for allowed in allowed_domains:
+    for allowed in all_allowed:
         # Direct match
         if check_netloc == allowed:
             return True
@@ -569,6 +601,9 @@ async def docs_fetch_docs(
         if ctx:
             word_count = len(markdown.split())
             await ctx.info(f"Fetched {word_count} words of documentation")
+
+        # Extract domains from links in the content and add to session allowlist
+        _add_domains_from_content(markdown, url)
 
         return markdown
 
