@@ -256,7 +256,7 @@ def _is_url_allowed(url: str, allowed_domains: set[str]) -> bool:
     """Check if a URL is from an allowed domain.
 
     Allows subdomains of configured domains. For example, if
-    'langchain.com' is allowed, then 'docs.langchain.com' is also allowed.
+    'langchain-ai.github.io' is allowed, then 'langchain-ai.github.io/langgraph/xyz' is also allowed.
     """
     from urllib.parse import urlparse
     parsed = urlparse(url)
@@ -269,9 +269,16 @@ def _is_url_allowed(url: str, allowed_domains: set[str]) -> bool:
     # Remove www. prefix for checking
     check_netloc = netloc[4:] if netloc.startswith("www.") else netloc
 
-    # Check exact match or subdomain match
+    # Check exact match or if requested domain is a subdomain of allowed
     for allowed in allowed_domains:
-        if check_netloc == allowed or check_netloc.endswith(f".{allowed}"):
+        # Direct match
+        if check_netloc == allowed:
+            return True
+        # Requested URL is a subdomain of allowed domain
+        if check_netloc.endswith(f".{allowed}"):
+            return True
+        # Allowed domain is a subdomain of requested URL (for base domain matching)
+        if allowed.endswith(f".{check_netloc}"):
             return True
 
     return False
@@ -410,10 +417,13 @@ def _load_docs_sources() -> tuple[dict, set, set]:
 
 
 def _extract_domain(url: str) -> str:
-    """Extract domain from URL for naming."""
+    """Extract full domain from URL for naming and domain fencing."""
     from urllib.parse import urlparse
     parsed = urlparse(url)
-    return parsed.netloc.replace("www.", "").split(".")[0]
+    # Return full domain without www prefix
+    # e.g., "langchain-ai.github.io" not "langchain-ai"
+    # e.g., "python.langchain.com" not "python"
+    return parsed.netloc.replace("www.", "")
 
 
 @mcp.tool()
