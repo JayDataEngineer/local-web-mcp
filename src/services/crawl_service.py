@@ -452,8 +452,10 @@ class MapCrawlService:
                 reverse=True  # exclude these patterns
             ))
 
+        # Create FilterChain - always create one (even if empty) to avoid Crawl4AI bug
+        # Crawl4AI crashes with AttributeError when filter_chain=None
+        filter_chain = FilterChain(filters) if filters else FilterChain([])
         if filters:
-            filter_chain = FilterChain(filters)
             logger.info(f"Using filter chain with {len(filters)} filters")
 
         if config.strategy == "best_first" and config.keywords:
