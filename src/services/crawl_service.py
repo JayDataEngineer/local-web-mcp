@@ -341,41 +341,45 @@ class MapCrawlService:
         failed = 0
 
         try:
-            async with AsyncWebCrawler() as crawler:
+            async with AsyncWebCrawler(verbose=False) as crawler:
                 result = await crawler.arun(url, config=crawl_config)
 
-                if result.success:
-                    # Process deep crawl results
-                    if hasattr(result, 'deep_crawl_results') and result.deep_crawl_results:
-                        for page_result in result.deep_crawl_results:
-                            page_data = {
-                                "url": page_result.url,
-                                "success": page_result.success,
-                                "title": getattr(page_result, 'title', None) or getattr(page_result.metadata, 'get', lambda x: None)('title', ''),
-                                "content": getattr(page_result, 'markdown', lambda: None)() if hasattr(page_result, 'markdown') else None,
-                                "depth": getattr(page_result.metadata, 'get', lambda x: None)('depth', 0) if hasattr(page_result, 'metadata') else 0,
-                            }
-                            pages.append(page_data)
-                            if page_result.success:
-                                successful += 1
-                            else:
-                                failed += 1
-                    else:
-                        # Single page result
+                # When using deep_crawl_strategy, arun returns a LIST of CrawlResult
+                if isinstance(result, list):
+                    # Process list of crawl results from deep crawling
+                    for page_result in result:
                         page_data = {
-                            "url": result.url,
-                            "success": result.success,
-                            "title": getattr(result.metadata, 'get', lambda x: None)('title', '') if hasattr(result, 'metadata') else '',
-                            "content": result.markdown.raw_markdown if hasattr(result, 'markdown') and result.markdown else None,
-                            "depth": 0,
+                            "url": page_result.url,
+                            "success": page_result.success,
+                            "title": getattr(page_result, 'title', None) or (
+                                page_result.metadata.get('title', '') if hasattr(page_result, 'metadata') and page_result.metadata else ''
+                            ),
+                            "content": page_result.markdown.raw_markdown if hasattr(page_result, 'markdown') and page_result.markdown else None,
+                            "depth": getattr(page_result.metadata, 'get', lambda x: None)('depth', 0) if hasattr(page_result, 'metadata') else 0,
                         }
                         pages.append(page_data)
-                        successful += 1
+                        if page_result.success:
+                            successful += 1
+                        else:
+                            failed += 1
+                elif result.success:
+                    # Single page result (no deep crawling happened)
+                    page_data = {
+                        "url": result.url,
+                        "success": result.success,
+                        "title": result.metadata.get('title', '') if hasattr(result, 'metadata') and result.metadata else '',
+                        "content": result.markdown.raw_markdown if hasattr(result, 'markdown') and result.markdown else None,
+                        "depth": 0,
+                    }
+                    pages.append(page_data)
+                    successful += 1
                 else:
                     failed += 1
 
         except Exception as e:
             logger.error(f"Error crawling {url}: {e}")
+            import traceback
+            traceback.print_exc()
             failed += 1
 
         return CrawlResult(

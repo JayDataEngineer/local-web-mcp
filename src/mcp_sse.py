@@ -1067,6 +1067,10 @@ async def crawl_site(
     if strategy == "best_first" and not keywords:
         raise ToolError("best_first strategy requires keywords parameter")
 
+    # Ensure word_count_threshold has a valid value
+    if word_count_threshold is None:
+        word_count_threshold = 100
+
     config = CrawlConfig(
         max_depth=max_depth,
         max_pages=max_pages,
