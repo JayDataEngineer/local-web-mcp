@@ -4,12 +4,54 @@ Provides:
 - AsyncUrlSeeder: Fast URL discovery from sitemaps/Common Crawl
 - BFSDeepCrawlStrategy: Controlled deep crawling with max depth/pages
 - JsonCssExtractionStrategy: Structured data extraction from pages
+
+Anti-detection features:
+- Stealth mode enabled (anti-fingerprinting)
+- Random user agents
+- Delays between requests
+- Block detection (403, CAPTCHA, rate limits)
 """
 
 from dataclasses import dataclass, field
 from typing import Literal
 from loguru import logger
 import json
+import re
+
+
+# Block detection patterns
+BLOCK_PATTERNS = {
+    "captcha": re.compile(r"captcha|challenge|prove.?human|robot.?check", re.I),
+    "blocked": re.compile(r"access.?denied|forbidden|blocked|unavailable", re.I),
+    "rate_limit": re.compile(r"rate.?limit|too.?many.?requests|429", re.I),
+}
+
+
+def detect_blocking(page_content: str, status_code: int = None) -> str | None:
+    """Detect if we've been blocked by the website
+
+    Returns:
+        Error message describing the block type, or None if not blocked
+    """
+    if status_code:
+        if status_code == 403:
+            return "Blocked: HTTP 403 Forbidden"
+        if status_code == 429:
+            return "Rate limited: Too many requests"
+        if status_code >= 500:
+            return f"Server error: HTTP {status_code}"
+
+    content_lower = page_content.lower()[:2000]  # Check first 2000 chars
+    for block_type, pattern in BLOCK_PATTERNS.items():
+        if pattern.search(content_lower):
+            if block_type == "captcha":
+                return "Blocked: CAPTCHA challenge detected"
+            if block_type == "blocked":
+                return "Blocked: Access denied"
+            if block_type == "rate_limit":
+                return "Rate limited: Too many requests"
+
+    return None
 
 
 @dataclass
@@ -263,7 +305,7 @@ class MapCrawlService:
         Returns:
             CrawlResult with crawled pages
         """
-        from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
+        from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, BrowserConfig
         from crawl4ai.deep_crawling import (
             BFSDeepCrawlStrategy,
             BestFirstCrawlingStrategy,
@@ -328,12 +370,26 @@ class MapCrawlService:
                 filter_chain=filter_chain,
             )
 
-        # Build crawl config
+        # Build crawl config with anti-detection settings
         crawl_config = CrawlerRunConfig(
             deep_crawl_strategy=deep_crawl_strategy,
             only_text=config.only_text,
             word_count_threshold=config.word_count_threshold,
-            verbose=True,
+            # Anti-detection: delays between requests
+            mean_delay=0.5,  # Average delay between requests (seconds)
+            delay_before_return_html=0.3,  # Delay before returning content
+            # User agent rotation
+            user_agent_mode="random",
+            verbose=False,
+        )
+
+        # Build browser config with stealth mode
+        browser_config = BrowserConfig(
+            headless=True,
+            enable_stealth=True,  # Anti-fingerprinting
+            user_agent_mode="random",
+            text_mode=config.only_text,
+            verbose=False,
         )
 
         pages = []
@@ -341,13 +397,23 @@ class MapCrawlService:
         failed = 0
 
         try:
-            async with AsyncWebCrawler(verbose=False) as crawler:
+            async with AsyncWebCrawler(config=browser_config, verbose=False) as crawler:
                 result = await crawler.arun(url, config=crawl_config)
 
                 # When using deep_crawl_strategy, arun returns a LIST of CrawlResult
                 if isinstance(result, list):
                     # Process list of crawl results from deep crawling
                     for page_result in result:
+                        # Check for blocking
+                        error_msg = None
+                        if not page_result.success:
+                            # Get HTML content for block detection
+                            page_html = getattr(page_result, 'html', '') or ''
+                            status_code = getattr(page_result, 'status_code', None)
+                            error_msg = detect_blocking(page_html, status_code)
+                            if not error_msg:
+                                error_msg = getattr(page_result, 'error_message', 'Crawl failed')
+
                         page_data = {
                             "url": page_result.url,
                             "success": page_result.success,
@@ -356,12 +422,15 @@ class MapCrawlService:
                             ),
                             "content": page_result.markdown.raw_markdown if hasattr(page_result, 'markdown') and page_result.markdown else None,
                             "depth": getattr(page_result.metadata, 'get', lambda x: None)('depth', 0) if hasattr(page_result, 'metadata') else 0,
+                            "error": error_msg if not page_result.success else None,
                         }
                         pages.append(page_data)
                         if page_result.success:
                             successful += 1
                         else:
                             failed += 1
+                            if error_msg and ("blocked" in error_msg.lower() or "captcha" in error_msg.lower() or "rate" in error_msg.lower()):
+                                logger.warning(f"Blocking detected at {page_result.url}: {error_msg}")
                 elif result.success:
                     # Single page result (no deep crawling happened)
                     page_data = {
@@ -374,6 +443,23 @@ class MapCrawlService:
                     pages.append(page_data)
                     successful += 1
                 else:
+                    # Check for blocking on failed single result
+                    page_html = getattr(result, 'html', '') or ''
+                    status_code = getattr(result, 'status_code', None)
+                    error_msg = detect_blocking(page_html, status_code) or getattr(result, 'error_message', 'Crawl failed')
+
+                    if error_msg and ("blocked" in error_msg.lower() or "captcha" in error_msg.lower() or "rate" in error_msg.lower()):
+                        logger.warning(f"Blocking detected at {url}: {error_msg}")
+
+                    page_data = {
+                        "url": result.url,
+                        "success": False,
+                        "title": "",
+                        "content": None,
+                        "depth": 0,
+                        "error": error_msg,
+                    }
+                    pages.append(page_data)
                     failed += 1
 
         except Exception as e:

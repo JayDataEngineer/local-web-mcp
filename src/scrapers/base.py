@@ -3,6 +3,7 @@
 from typing import Callable, Any
 from loguru import logger
 from datetime import datetime
+import re
 
 from ..core.constants import (
     CRAWL4AI_WORD_COUNT_THRESHOLD,
@@ -13,6 +14,41 @@ from ..core.constants import (
     SELENIUM_RETRY_COUNT,
 )
 from ..utils import extract_domain
+
+
+# Block detection patterns
+BLOCK_PATTERNS = {
+    "captcha": re.compile(r"captcha|challenge|prove.?human|robot.?check", re.I),
+    "blocked": re.compile(r"access.?denied|forbidden|blocked|unavailable", re.I),
+    "rate_limit": re.compile(r"rate.?limit|too.?many.?requests|429", re.I),
+}
+
+
+def detect_blocking(page_content: str, status_code: int = None) -> str | None:
+    """Detect if we've been blocked by the website
+
+    Returns:
+        Error message describing the block type, or None if not blocked
+    """
+    if status_code:
+        if status_code == 403:
+            return "Blocked: HTTP 403 Forbidden"
+        if status_code == 429:
+            return "Rate limited: Too many requests"
+        if status_code >= 500:
+            return f"Server error: HTTP {status_code}"
+
+    content_lower = page_content.lower()[:2000]  # Check first 2000 chars
+    for block_type, pattern in BLOCK_PATTERNS.items():
+        if pattern.search(content_lower):
+            if block_type == "captcha":
+                return "Blocked: CAPTCHA challenge detected"
+            if block_type == "blocked":
+                return "Blocked: Access denied"
+            if block_type == "rate_limit":
+                return "Rate limited: Too many requests"
+
+    return None
 
 
 def build_scrape_response(
@@ -62,7 +98,7 @@ def build_error_response(url: str, method: str, error) -> dict:
 
 async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only: bool = False) -> dict:
     """
-    Scrape using Crawl4AI (fast, JS-enabled)
+    Scrape using Crawl4AI (fast, JS-enabled) with stealth mode
 
     Args:
         url: URL to scrape
@@ -75,14 +111,14 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only
     try:
         from crawl4ai import AsyncWebCrawler, BrowserConfig
 
-        # Build browser config with text mode if requested
-        browser_config = None
-        if text_only:
-            browser_config = BrowserConfig(
-                headless=True,
-                text_mode=True,  # Disable images for speed
-                verbose=False
-            )
+        # Build browser config with stealth mode (always enabled for anti-detection)
+        browser_config = BrowserConfig(
+            headless=True,
+            enable_stealth=True,  # Anti-fingerprinting
+            user_agent_mode="random",  # Random user agent
+            text_mode=text_only,  # Disable images if requested
+            verbose=False
+        )
 
         async with AsyncWebCrawler(config=browser_config, verbose=False) as crawler:
             result = await crawler.arun(
@@ -90,6 +126,9 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only
                 word_count_threshold=CRAWL4AI_WORD_COUNT_THRESHOLD,
                 bypass_cache=True,
                 process_iframes=False,
+                # Anti-detection: add delay
+                mean_delay=0.3,
+                delay_before_return_html=0.2,
             )
 
             if result.success:
@@ -122,8 +161,19 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only
                     metadata=_build_metadata(len(clean_markdown.split())),
                 )
 
-        # If we get here, Crawl4AI didn't succeed
-        return build_error_response(url, "crawl4ai", "Scraping failed")
+        # If we get here, Crawl4AI didn't succeed - check for blocking
+        page_html = getattr(result, 'html', '') or ''
+        status_code = getattr(result, 'status_code', None)
+        block_error = detect_blocking(page_html, status_code)
+
+        if block_error:
+            logger.warning(f"Blocking detected for {url}: {block_error}")
+        else:
+            # Log generic failure with more details if available
+            error_detail = getattr(result, 'error_message', 'No details')
+            logger.warning(f"Crawl4AI failed for {url}: {error_detail}")
+
+        return build_error_response(url, "crawl4ai", block_error or "Scraping failed")
 
     except ImportError:
         logger.warning("Crawl4AI not installed")
