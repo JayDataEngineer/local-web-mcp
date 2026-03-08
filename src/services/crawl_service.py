@@ -158,6 +158,9 @@ class MapCrawlService:
         """
         from crawl4ai import SeedingConfig
         from urllib.parse import urlparse
+        from ..scrapers.base import scrape_selenium
+        from ..utils import extract_domain
+        import xml.etree.ElementTree as ET
 
         # Normalize domain to URL format
         if not domain.startswith(("http://", "https://")):
@@ -206,8 +209,15 @@ class MapCrawlService:
             )
 
         except Exception as e:
-            logger.error(f"Error mapping domain {domain}: {e}")
-            # Return empty result on error
+            logger.warning(f"Crawl4AI seeder failed for {domain}: {e}")
+
+            # Fallback: Try to fetch sitemap.xml directly using SeleniumBase
+            if config.source in ("sitemap", "sitemap+cc"):
+                logger.info(f"Falling back to SeleniumBase sitemap fetch for {domain}")
+                return await self._map_domain_selenium_fallback(domain, config)
+
+            # If Common Crawl only requested, no fallback available
+            logger.error(f"Cannot map {domain} - Common Crawl failed and no sitemap fallback")
             return MapResult(
                 domain=domain,
                 total_urls=0,
@@ -215,6 +225,106 @@ class MapCrawlService:
                 urls=[],
                 source_used=config.source,
             )
+
+    async def _map_domain_selenium_fallback(
+        self,
+        domain: str,
+        config: MapConfig,
+    ) -> MapResult:
+        """Fallback: Fetch and parse sitemap.xml using SeleniumBase
+
+        Args:
+            domain: Domain to map
+            config: Configuration for URL discovery
+
+        Returns:
+            MapResult with discovered URLs
+        """
+        from ..scrapers.base import scrape_selenium
+        from .content_cleaner import ContentCleaner
+        import xml.etree.ElementTree as ET
+        from urllib.parse import urljoin
+
+        cleaner = ContentCleaner()
+        urls = []
+
+        # Common sitemap locations
+        sitemap_urls = [
+            f"https://{domain}/sitemap.xml",
+            f"https://{domain}/sitemap_index.xml",
+            f"https://{domain}/wp-sitemap.xml",  # WordPress
+        ]
+
+        # Try each sitemap URL
+        for sitemap_url in sitemap_urls:
+            try:
+                logger.info(f"Trying sitemap: {sitemap_url}")
+
+                # Use SeleniumBase to fetch the sitemap
+                result = await scrape_selenium(
+                    url=sitemap_url,
+                    cleaner=cleaner,
+                    css_selector=None
+                )
+
+                if not result.get("success"):
+                    continue
+
+                sitemap_content = result.get("content", "")
+                if not sitemap_content:
+                    continue
+
+                # Parse XML sitemap
+                root = ET.fromstring(sitemap_content.encode() if isinstance(sitemap_content, str) else sitemap_content)
+
+                # Handle namespace
+                ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+                has_ns = root.tag.startswith("{http://www.sitemaps.org}")
+
+                # Check if this is a sitemap index
+                if has_ns:
+                    sitemap_tags = root.findall(".//sm:sitemap/sm:loc", ns)
+                    url_tags = root.findall(".//sm:url/sm:loc", ns)
+                else:
+                    sitemap_tags = root.findall(".//sitemap/loc")
+                    url_tags = root.findall(".//url/loc")
+
+                # If sitemap index, we'd need to fetch child sitemaps (skip for now)
+                # Just return direct URLs
+                for url_tag in url_tags:
+                    url = url_tag.text
+                    if url and self._url_matches_pattern(url, config.pattern):
+                        urls.append({
+                            "url": url,
+                            "status": "valid",  # We got it from sitemap
+                            "source": "sitemap_selenium"
+                        })
+
+                if urls:
+                    logger.info(f"Selenium fallback found {len(urls)} URLs from {sitemap_url}")
+                    break
+
+            except Exception as e:
+                logger.debug(f"Failed to fetch {sitemap_url}: {e}")
+                continue
+
+        # Filter to max_urls
+        valid_urls = urls[:config.max_urls]
+
+        return MapResult(
+            domain=domain,
+            total_urls=len(urls),
+            valid_urls=len(valid_urls),
+            urls=valid_urls,
+            source_used="sitemap_selenium_fallback",
+        )
+
+    def _url_matches_pattern(self, url: str, pattern: str) -> bool:
+        """Check if URL matches a glob pattern"""
+        import fnmatch
+        if pattern == "*":
+            return True
+        return fnmatch.fnmatch(url, pattern)
 
     async def map_many_domains(
         self,

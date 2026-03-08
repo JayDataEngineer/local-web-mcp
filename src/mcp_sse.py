@@ -1109,6 +1109,35 @@ async def crawl_site(
     if ctx:
         await ctx.info(f"Crawled {result.total_crawled} pages ({result.successful} successful, {result.failed} failed)")
 
+    # Check for blocking - if all pages failed with block errors, provide clear message
+    if result.failed > 0 and result.pages:
+        block_errors = [p.get("error") for p in result.pages if p.get("error")]
+        if block_errors and any("blocked" in e.lower() or "captcha" in e.lower() or "rate" in e.lower() for e in block_errors if e):
+            # Count block types
+            blocked_count = sum(1 for e in block_errors if e and ("blocked" in e.lower() or "captcha" in e.lower()))
+            rate_limited = sum(1 for e in block_errors if e and "rate" in e.lower())
+
+            if blocked_count > 0 or rate_limited > 0:
+                error_msg = "Unable to crawl - "
+                if blocked_count > 0:
+                    error_msg += f"site is blocking automated crawlers (CAPTCHA/access denied). "
+                if rate_limited > 0:
+                    error_msg += f"rate limiting detected. "
+
+                error_msg += "Try scrape_url instead which has SeleniumBase fallback."
+                if ctx:
+                    await ctx.info(error_msg)
+
+                return {
+                    "start_url": url,
+                    "total_crawled": result.total_crawled,
+                    "successful": result.successful,
+                    "failed": result.failed,
+                    "pages": pages_summary,
+                    "block_detected": True,
+                    "error_message": error_msg.strip(),
+                }
+
     return {
         "start_url": url,
         "total_crawled": result.total_crawled,
