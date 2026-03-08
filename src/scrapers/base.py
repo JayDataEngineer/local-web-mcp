@@ -196,12 +196,25 @@ async def scrape_selenium(url: str, cleaner, css_selector: str = None) -> dict:
     """
     try:
         from seleniumbase import DriverContext
+        from pathlib import Path
+        import os
+
+        # Find Playwright's Chromium binary
+        chromium_paths = list(Path("/root/.cache/ms-playwright").glob("chromium-*/chrome-linux64/chrome"))
+        if chromium_paths:
+            browser_path = str(chromium_paths[0])
+            logger.info(f"Using Playwright Chromium: {browser_path}")
+            # Set environment variable for SeleniumBase
+            os.environ["SELENIUM_BROWSER_PATH"] = browser_path
+        else:
+            logger.warning("Playwright Chromium not found, SeleniumBase will use system browser")
 
         # Run sync Selenium in thread pool to avoid blocking
         import asyncio
         loop = asyncio.get_event_loop()
 
         def _scrape_sync():
+            # Use undetected Chrome mode with Playwright's Chromium
             with DriverContext(uc=True, headless=True) as driver:
                 driver.open(url)
                 driver.sleep(SELENIUM_PAGE_LOAD_WAIT_SECONDS)

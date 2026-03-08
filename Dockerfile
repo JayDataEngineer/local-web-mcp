@@ -52,6 +52,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN .venv/bin/playwright install --with-deps chromium
 
 # Install SeleniumBase chromedriver
+# Note: Chromium is installed by Playwright, SeleniumBase can use it with --browser-path
 RUN .venv/bin/seleniumbase get chromedriver
 
 # Copy source code
