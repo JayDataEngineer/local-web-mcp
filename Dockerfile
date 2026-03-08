@@ -51,8 +51,20 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Install Playwright Chromium
 RUN .venv/bin/playwright install --with-deps chromium
 
-# Install SeleniumBase chromedriver
-# Note: Chromium is installed by Playwright, SeleniumBase can use it with --browser-path
+# Install Google Chrome for SeleniumBase fallback
+# Note: libindicator7 is obsolete in Bookworm, using libayatana-appindicator instead
+RUN apt-get update && apt-get install -y \
+    libxss1 \
+    libayatana-appindicator3-1 \
+    xdg-utils \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+
+RUN apt-get install -y ./google-chrome*.deb && rm ./google-chrome*.deb
+
+# Install SeleniumBase chromedriver for Google Chrome
 RUN .venv/bin/seleniumbase get chromedriver
 
 # Copy source code
@@ -88,7 +100,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-color-emoji \
     xvfb \
     curl \
+    wget \
+    libxss1 \
+    libayatana-appindicator3-1 \
+    xdg-utils \
+    libvulkan1 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Google Chrome for SeleniumBase fallback
+RUN wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
+    apt-get install -y ./google-chrome*.deb && \
+    rm ./google-chrome*.deb
 
 WORKDIR /app
 
