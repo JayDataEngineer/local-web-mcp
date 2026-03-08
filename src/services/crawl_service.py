@@ -272,6 +272,38 @@ class MapCrawlService:
         from crawl4ai.deep_crawling.scorers import KeywordRelevanceScorer
 
         # Build strategy based on config
+        # Build filter chain from all pattern sources
+        filter_chain = None
+        filters = []
+
+        # Add simple pattern to filter chain
+        if config.pattern:
+            filters.append(URLPatternFilter(
+                patterns=[config.pattern],
+                use_glob=True,
+                reverse=False
+            ))
+
+        # Add include_patterns
+        if config.include_patterns:
+            filters.append(URLPatternFilter(
+                patterns=config.include_patterns,
+                use_glob=True,
+                reverse=False  # include these patterns
+            ))
+
+        # Add exclude_patterns
+        if config.exclude_patterns:
+            filters.append(URLPatternFilter(
+                patterns=config.exclude_patterns,
+                use_glob=True,
+                reverse=True  # exclude these patterns
+            ))
+
+        if filters:
+            filter_chain = FilterChain(filters)
+            logger.info(f"Using filter chain with {len(filters)} filters")
+
         if config.strategy == "best_first" and config.keywords:
             logger.info(f"Using Best-First strategy with keywords: {config.keywords}")
             url_scorer = KeywordRelevanceScorer(
@@ -282,37 +314,17 @@ class MapCrawlService:
                 max_depth=config.max_depth,
                 include_external=config.include_external,
                 max_pages=config.max_pages,
-                pattern=config.pattern,
                 url_scorer=url_scorer,
+                filter_chain=filter_chain,
             )
         else:
             # BFS strategy (default)
             logger.info(f"Using BFS strategy")
-            # Build filter chain if patterns specified
-            filter_chain = None
-            if config.include_patterns or config.exclude_patterns:
-                filters = []
-                if config.include_patterns:
-                    filters.append(URLPatternFilter(
-                        patterns=config.include_patterns,
-                        use_glob=True,
-                        reverse=False  # include these patterns
-                    ))
-                if config.exclude_patterns:
-                    filters.append(URLPatternFilter(
-                        patterns=config.exclude_patterns,
-                        use_glob=True,
-                        reverse=True  # exclude these patterns
-                    ))
-                if filters:
-                    filter_chain = FilterChain(filters)
-                    logger.info(f"Using filter chain: include={config.include_patterns}, exclude={config.exclude_patterns}")
 
             deep_crawl_strategy = BFSDeepCrawlStrategy(
                 max_depth=config.max_depth,
                 include_external=config.include_external,
                 max_pages=config.max_pages,
-                pattern=config.pattern,
                 filter_chain=filter_chain,
             )
 
