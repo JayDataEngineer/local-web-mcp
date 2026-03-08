@@ -1,6 +1,6 @@
-"""MCP Server with SSE transport for Tailscale/HTTP access
+"""MCP Server with Streamable HTTP transport for Tailscale/HTTP access
 
-This allows Claude Desktop or other MCP clients to connect over HTTP/SSE
+This allows Claude Desktop or other MCP clients to connect over HTTP
 instead of stdio. Perfect for remote access via Tailscale.
 
 Web Research Tools:
@@ -147,7 +147,7 @@ mcp.add_middleware(ErrorHandlingMiddleware(
 ))
 
 # Add response caching middleware with Redis backend
-# Note: SSE streaming endpoints are automatically excluded by FastMCP
+# Note: Streaming endpoints are automatically excluded by FastMCP
 if redis_store:
     try:
         mcp.add_middleware(ResponseCachingMiddleware(
@@ -168,9 +168,9 @@ _original_http_app = mcp.http_app
 def http_app_with_middleware(**kwargs):
     """Add CORS and health check to the underlying Starlette app
 
-    Note: We don't add custom SSE headers middleware because:
-    1. FastMCP already handles SSE headers correctly
-    2. Custom middleware on top of SSE streaming causes buffering issues
+    Note: We don't add custom streaming headers middleware because:
+    1. FastMCP already handles HTTP streaming headers correctly
+    2. Custom middleware on top of streaming causes buffering issues
     """
     app = _original_http_app(**kwargs)
 
@@ -1232,13 +1232,13 @@ if __name__ == "__main__":
     port = int(os.getenv("MCP_PORT", 8000))
     host = os.getenv("MCP_HOST", "0.0.0.0")
 
-    logger.info(f"MCP SSE server starting on {host}:{port}")
-    logger.info(f"Direct access: http://localhost:{port}/sse")
-    logger.info(f"Via Caddy+Tailscale: http://<your-tailscale-ip>/sse")
-    logger.info(f"Via MagicDNS+Caddy: https://<hostname>.<tailnet>.ts.net/sse")
+    logger.info(f"MCP HTTP server starting on {host}:{port}")
+    logger.info(f"Direct access: http://localhost:{port}/mcp")
+    logger.info(f"Via Caddy+Tailscale: http://<your-tailscale-ip>/mcp")
+    logger.info(f"Via MagicDNS+Caddy: https://<hostname>.<tailnet>.ts.net/mcp")
     logger.info(f"Session state: Redis @ {REDIS_HOST}:{REDIS_PORT}")
     logger.info(f"Caching: enabled (search: {SEARCH_CACHE_TTL}s, scrape: {SCRAPE_CACHE_TTL}s)")
     logger.info(f"Web tools: search_web, scrape_url, map_domain, crawl_site, scrape_structured, list_schemas, get_domains, clean_database")
     logger.info(f"Docs tools: docs_list_sources, docs_fetch_docs")
 
-    mcp.run(transport="sse", host=host, port=port)
+    mcp.run(transport="http", host=host, port=port)
