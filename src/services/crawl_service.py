@@ -149,7 +149,9 @@ class MapCrawlService:
             urls = await seeder.urls(domain, seeding_config)
 
             # Process results
-            valid_urls = [u for u in urls if u.get("status") == "valid"]
+            # Accept URLs with status="valid" or status="unknown"
+            # "unknown" means not verified via live_check, but still usable
+            valid_urls = [u for u in urls if u.get("status") in ("valid", "unknown")]
 
             logger.info(f"Discovered {len(urls)} total URLs, {len(valid_urls)} valid")
 
@@ -223,7 +225,8 @@ class MapCrawlService:
                 parsed = urlparse(domain_url)
                 domain = parsed.netloc
 
-                valid_urls = [u for u in urls if u.get("status") == "valid"]
+                # Accept URLs with status="valid" or status="unknown"
+                valid_urls = [u for u in urls if u.get("status") in ("valid", "unknown")]
 
                 output[domain] = MapResult(
                     domain=domain,
