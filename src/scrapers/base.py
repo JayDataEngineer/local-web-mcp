@@ -21,7 +21,60 @@ BLOCK_PATTERNS = {
     "captcha": re.compile(r"captcha|challenge|prove.?human|robot.?check", re.I),
     "blocked": re.compile(r"access.?denied|forbidden|blocked|unavailable", re.I),
     "rate_limit": re.compile(r"rate.?limit|too.?many.?requests|429", re.I),
+    "checkpoint": re.compile(
+        r"security.?checkpoint|verifying.?browser|browser.?verification|"
+        r"wir.uberprüfen.ihren.browser|vercel.link/security-checkpoint|"
+        r"click.here.to.fix.security",
+        re.I
+    ),
 }
+
+
+def is_security_checkpoint(title: str, content: str, url: str = None) -> bool:
+    """Detect if the page is a security checkpoint/challenge page
+
+    Returns True if the page appears to be a bot protection checkpoint
+    rather than actual content.
+    """
+    # Check title first (most reliable)
+    title_lower = title.lower() if title else ""
+    checkpoint_title_patterns = [
+        "security checkpoint",
+        "verifying your browser",
+        "browser verification",
+        "checkpoint",
+        "access verification",
+        "human verification",
+        "wir überprüfen ihren browser",  # German
+    ]
+    for pattern in checkpoint_title_patterns:
+        if pattern in title_lower:
+            return True
+
+    # Check content for specific indicators
+    content_lower = content.lower() if content else ""
+    checkpoint_content_indicators = [
+        "vercel.link/security-checkpoint",
+        "vercel.link/captcha",
+        "cloudflare challenge",
+        "checking your browser",
+        "please wait while we verify",
+        "enable javascript",
+    ]
+    for indicator in checkpoint_content_indicators:
+        if indicator in content_lower:
+            return True
+
+    # Check for suspiciously short content on documentation-type URLs
+    # (docs pages should have substantial content)
+    if url and any(x in url for x in ["/docs/", "/documentation/", "/guide/", "/reference/"]):
+        # If content is very short (< 300 chars) and contains verification terms
+        if len(content) < 300 and any(
+            term in content_lower for term in ["verify", "check", "browser", "human", "robot"]
+        ):
+            return True
+
+    return False
 
 
 def detect_blocking(page_content: str, status_code: int = None) -> str | None:
@@ -47,6 +100,8 @@ def detect_blocking(page_content: str, status_code: int = None) -> str | None:
                 return "Blocked: Access denied"
             if block_type == "rate_limit":
                 return "Rate limited: Too many requests"
+            if block_type == "checkpoint":
+                return "Blocked: Security checkpoint - bot verification required"
 
     return None
 
@@ -152,6 +207,11 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only
 
                 title = result.metadata.get("title", "") if hasattr(result, "metadata") else ""
 
+                # Check for security checkpoint pages (bot protection)
+                if is_security_checkpoint(title, clean_markdown, url):
+                    logger.warning(f"Security checkpoint detected for {url}: {title}")
+                    return build_error_response(url, "crawl4ai", "Blocked: Security checkpoint - bot verification required")
+
                 return build_scrape_response(
                     success=True,
                     url=url,
@@ -228,6 +288,11 @@ async def scrape_selenium(url: str, cleaner, css_selector: str = None) -> dict:
         # Check minimum content length
         if len(clean_markdown) < MIN_CONTENT_LENGTH:
             return build_content_too_short_response(url, "selenium", len(clean_markdown))
+
+        # Check for security checkpoint pages (bot protection)
+        if is_security_checkpoint(title, clean_markdown, url):
+            logger.warning(f"Security checkpoint detected for {url}: {title}")
+            return build_error_response(url, "selenium", "Blocked: Security checkpoint - bot verification required")
 
         return build_scrape_response(
             success=True,

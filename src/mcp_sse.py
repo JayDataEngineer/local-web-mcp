@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 from fastmcp import FastMCP, Context
 from fastmcp.server.lifespan import lifespan
+from fastmcp.server.providers import LocalProvider
 from fastmcp.server.middleware.caching import ResponseCachingMiddleware
 from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
 from fastmcp.exceptions import ToolError
