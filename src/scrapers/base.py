@@ -568,6 +568,7 @@ async def scrape_with_fallback(
     # 2. Always try Crawl4AI (3x) - this prevents false "selenium-only" marks
     # 3. If Crawl4AI fails, mark selenium-only and try Selenium (3x)
 
+    import asyncio
     selenium_tried_first = False
 
     # If domain is already selenium-only, start with Selenium retries
@@ -576,6 +577,13 @@ async def scrape_with_fallback(
         selenium_tried_first = True
         for attempt in range(1, SELENIUM_RETRY_COUNT + 1):
             logger.info(f"Selenium attempt {attempt}/{SELENIUM_RETRY_COUNT} for {url}")
+
+            # Exponential backoff before retry
+            if attempt > 1:
+                delay = 2 ** (attempt - 1)
+                logger.info(f"Waiting {delay} seconds before Selenium retry {attempt}...")
+                await asyncio.sleep(delay)
+
             result = await scrape_selenium(url, cleaner, css_selector)
             if result["success"]:
                 await db.record_success(domain, "selenium")
@@ -585,12 +593,28 @@ async def scrape_with_fallback(
         logger.warning(f"All Selenium attempts failed for {domain}, trying Crawl4AI as fallback")
 
     # Try Crawl4AI with retries (always try unless already succeeded)
+    checkpoint_detected = False
     for attempt in range(1, CRAWL4AI_RETRY_COUNT + 1):
         logger.info(f"Crawl4AI attempt {attempt}/{CRAWL4AI_RETRY_COUNT} for {url}")
+
+        # Exponential backoff before retry (2, 4, 8, 16... seconds)
+        if attempt > 1:
+            delay = 2 ** (attempt - 1)
+            logger.info(f"Waiting {delay} seconds before retry {attempt}...")
+            await asyncio.sleep(delay)
+
         result = await scrape_crawl4ai(url, cleaner, css_selector, text_only)
         if result["success"]:
             await db.record_success(domain, "crawl4ai")
             return result
+
+        # Check for security checkpoint - immediate fallback if detected
+        error_msg = result.get("error", "")
+        if "Security checkpoint" in error_msg:
+            logger.warning(f"Checkpoint detected on Crawl4AI attempt {attempt} - switching to Selenium immediately")
+            checkpoint_detected = True
+            break  # Skip remaining retries, go straight to Selenium
+
         logger.warning(f"Crawl4AI attempt {attempt} failed for {url}")
 
     # Crawl4AI exhausted - mark domain for Selenium and try Selenium
@@ -601,6 +625,13 @@ async def scrape_with_fallback(
     if not selenium_tried_first:
         for attempt in range(1, SELENIUM_RETRY_COUNT + 1):
             logger.info(f"Selenium attempt {attempt}/{SELENIUM_RETRY_COUNT} for {url}")
+
+            # Exponential backoff before retry (2, 4, 8, 16... seconds)
+            if attempt > 1:
+                delay = 2 ** (attempt - 1)
+                logger.info(f"Waiting {delay} seconds before Selenium retry {attempt}...")
+                await asyncio.sleep(delay)
+
             result = await scrape_selenium(url, cleaner, css_selector)
             if result["success"]:
                 await db.record_success(domain, "selenium")
