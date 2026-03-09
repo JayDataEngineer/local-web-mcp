@@ -664,6 +664,9 @@ async def search_web(
     rerank: Annotated[bool, Field(
         description="Apply flash re-ranking based on query relevance"
     )] = False,
+    time_filter: Annotated[Literal["day", "week", "month", "year"] | None, Field(
+        description="Filter results by time: day (24h), week (7d), month (30d), year (365d)"
+    )] = None,
     ctx: Context | None = None
 ) -> dict:
     """Search the web using multiple search engines
@@ -674,6 +677,7 @@ async def search_web(
         exclude_blacklist: Exclude blacklisted domains from results
         top_k: Maximum number of results to return (default: all results)
         rerank: Apply flash re-ranking to prioritize relevant results
+        time_filter: Filter by time - day (24h), week (7d), month (30d), year (365d)
 
     Returns:
         Dictionary with query, total_results, and list of results
@@ -695,13 +699,16 @@ async def search_web(
         pages=pages,
         exclude_blacklist=exclude_blacklist,
         top_k=top_k,
-        rerank=rerank
+        rerank=rerank,
+        time_filter=time_filter
     )
 
     if ctx:
         await ctx.info(f"Found {result.total_results} results")
         if rerank:
             await ctx.info("Results re-ranked by query relevance")
+        if time_filter:
+            await ctx.info(f"Filtered by time: {time_filter}")
         if result.cached:
             await ctx.debug("Returned cached results")
 
@@ -713,6 +720,7 @@ async def search_web(
         "search_time_ms": result.search_time_ms,
         "cached": result.cached,
         "reranked": rerank,
+        "time_filter": time_filter,
         "results": [
             {"title": r.title, "url": r.url, "snippet": r.snippet}
             for r in result.results

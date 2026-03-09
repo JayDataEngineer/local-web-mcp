@@ -30,7 +30,8 @@ class UnifiedSearchService:
         pages: int = 10,
         exclude_blacklist: bool = True,
         top_k: int | None = None,
-        rerank: bool = False
+        rerank: bool = False,
+        time_filter: str | None = None
     ) -> CombinedSearchResponse:
         """Search SearXNG with pagination, blacklist filtering, and re-ranking
 
@@ -40,6 +41,7 @@ class UnifiedSearchService:
             exclude_blacklist: Filter out blacklisted domains
             top_k: Maximum number of results to return (None = all results)
             rerank: Apply flash re-ranking based on query relevance
+            time_filter: Filter results by time (day, week, month, year)
         """
         import asyncio
 
@@ -52,7 +54,7 @@ class UnifiedSearchService:
             blacklisted = await db.get_blacklisted_domains()
             logger.info(f"Blacklisted domains: {blacklisted}")
 
-        results = await self._fetch_results(query, pages, blacklisted)
+        results = await self._fetch_results(query, pages, blacklisted, time_filter)
         unique_results = self._deduplicate(results)
 
         # Apply flash re-ranking if requested
@@ -143,8 +145,15 @@ class UnifiedSearchService:
 
         return [r for r, s in scored_results]
 
-    async def _fetch_results(self, query: str, pages: int, blacklisted: set[str]) -> list[SearchResult]:
-        """Fetch results from SearXNG with pagination"""
+    async def _fetch_results(self, query: str, pages: int, blacklisted: set[str], time_filter: str | None = None) -> list[SearchResult]:
+        """Fetch results from SearXNG with pagination
+
+        Args:
+            query: Search query
+            pages: Number of pages to fetch
+            blacklisted: Set of blacklisted domains to filter out
+            time_filter: Optional time range filter (day, week, month, year)
+        """
         results = []
 
         for page in range(1, pages + 1):
@@ -154,6 +163,10 @@ class UnifiedSearchService:
                 "pageno": page,
                 "engines": ",".join(DEFAULT_SEARCH_ENGINES)
             }
+
+            # Add time filter if specified (SearXNG built-in feature)
+            if time_filter:
+                params["time_range"] = time_filter
 
             try:
                 response = await self.client.get(f"{self.searxng_url}/search", params=params)
