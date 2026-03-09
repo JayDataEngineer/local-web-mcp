@@ -60,6 +60,8 @@ def is_security_checkpoint(title: str, content: str, url: str = None) -> bool:
         "checking your browser",
         "please wait while we verify",
         "enable javascript",
+        "just a moment",
+        "click here to verify",
     ]
     for indicator in checkpoint_content_indicators:
         if indicator in content_lower:
@@ -67,14 +69,44 @@ def is_security_checkpoint(title: str, content: str, url: str = None) -> bool:
 
     # Check for suspiciously short content on documentation-type URLs
     # (docs pages should have substantial content)
-    if url and any(x in url for x in ["/docs/", "/documentation/", "/guide/", "/reference/"]):
-        # If content is very short (< 300 chars) and contains verification terms
-        if len(content) < 300 and any(
-            term in content_lower for term in ["verify", "check", "browser", "human", "robot"]
-        ):
-            return True
+    if url:
+        url_lower = url.lower()
+        # Documentation URLs should have longer content
+        if any(x in url_lower for x in ["/docs/", "/documentation/", "/guide/", "/reference/"]):
+            if len(content) < 300 and any(
+                term in content_lower for term in ["verify", "check", "browser", "human", "robot", "javascript"]
+            ):
+                return True
+        # Blog/article URLs should have reasonable content
+        elif any(x in url_lower for x in ["/blog/", "/article/", "/posts/"]):
+            if len(content) < 200 and "verify" in content_lower:
+                return True
 
-    return False
+    return None  # Return None instead of False to indicate "not a checkpoint"
+
+
+def is_low_quality_response(content: str, url: str = None) -> str | None:
+    """Quick check if content is suspiciously low quality for the URL type
+
+    Returns error message if low quality, None if content looks adequate.
+    Fast check before expensive processing.
+    """
+    if not content or len(content) < 50:
+        return "Blocked: Empty or near-empty response"
+
+    url_lower = url.lower() if url else ""
+
+    # Documentation should have substantial content
+    if any(x in url_lower for x in ["/docs/", "/api/", "/reference/"]):
+        if len(content) < 300:
+            return f"Blocked: Documentation too short ({len(content)} chars < 300 minimum)"
+
+    # Blog posts should have reasonable content
+    if any(x in url_lower for x in ["/blog/", "/article/", "/posts/", "/news/"]):
+        if len(content) < 200:
+            return f"Blocked: Article too short ({len(content)} chars < 200 minimum)"
+
+    return None
 
 
 def detect_blocking(page_content: str, status_code: int = None) -> str | None:
@@ -189,7 +221,37 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only
             if result.success:
                 domain = extract_domain(url)
                 html_content = result.html
+
+                # FAST CHECK: Get title and check for checkpoint BEFORE expensive cleaning
+                title = result.metadata.get("title", "") if hasattr(result, "metadata") else ""
+
+                # Quick checkpoint detection on raw title (fail fast)
+                if title and "checkpoint" in title.lower():
+                    logger.warning(f"Fast checkpoint detection for {url}: {title}")
+                    return build_error_response(url, "crawl4ai", "Blocked: Security checkpoint - bot verification required")
+
+                # Quick status code check
+                status_code = getattr(result, 'status_code', None)
+                if status_code and status_code >= 400:
+                    block_error = detect_blocking("", status_code)
+                    if block_error:
+                        logger.warning(f"Fast status code detection for {url}: {block_error}")
+                        return build_error_response(url, "crawl4ai", block_error)
+
+                # Quick HTML checkpoint check (before cleaning)
+                if is_security_checkpoint(title, html_content[:1000], url) is True:
+                    logger.warning(f"HTML checkpoint detected for {url}: {title}")
+                    return build_error_response(url, "crawl4ai", "Blocked: Security checkpoint - bot verification required")
+
+                # Now do expensive content cleaning
                 clean_markdown = cleaner.clean(html_content, url, css_selector)
+
+                # Quick quality check before content length checks
+                quality_error = is_low_quality_response(clean_markdown, url)
+                if quality_error:
+                    logger.warning(f"Low quality response for {url}: {quality_error}")
+                    # Don't fail immediately - might be a valid short page
+                    # But mark for potential retry with different method
 
                 # Check minimum content length
                 if len(clean_markdown) < MIN_CONTENT_LENGTH:
@@ -205,11 +267,9 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only
                     else:
                         return build_content_too_short_response(url, "crawl4ai", len(clean_markdown))
 
-                title = result.metadata.get("title", "") if hasattr(result, "metadata") else ""
-
-                # Check for security checkpoint pages (bot protection)
-                if is_security_checkpoint(title, clean_markdown, url):
-                    logger.warning(f"Security checkpoint detected for {url}: {title}")
+                # Final checkpoint check on cleaned content (catch anything missed)
+                if is_security_checkpoint(title, clean_markdown, url) is True:
+                    logger.warning(f"Final checkpoint detected for {url}: {title}")
                     return build_error_response(url, "crawl4ai", "Blocked: Security checkpoint - bot verification required")
 
                 return build_scrape_response(
@@ -283,15 +343,26 @@ async def scrape_selenium(url: str, cleaner, css_selector: str = None) -> dict:
                 return html_content, title
 
         html_content, title = await loop.run_in_executor(None, _scrape_sync)
+
+        # FAST CHECK: Detect checkpoints before expensive cleaning
+        if title and "checkpoint" in title.lower():
+            logger.warning(f"Fast checkpoint detection (Selenium) for {url}: {title}")
+            return build_error_response(url, "selenium", "Blocked: Security checkpoint - bot verification required")
+
+        # Quick HTML checkpoint check
+        if is_security_checkpoint(title, html_content[:1000], url) is True:
+            logger.warning(f"HTML checkpoint detected (Selenium) for {url}: {title}")
+            return build_error_response(url, "selenium", "Blocked: Security checkpoint - bot verification required")
+
         clean_markdown = cleaner.clean(html_content, url, css_selector)
 
         # Check minimum content length
         if len(clean_markdown) < MIN_CONTENT_LENGTH:
             return build_content_too_short_response(url, "selenium", len(clean_markdown))
 
-        # Check for security checkpoint pages (bot protection)
-        if is_security_checkpoint(title, clean_markdown, url):
-            logger.warning(f"Security checkpoint detected for {url}: {title}")
+        # Final checkpoint check on cleaned content
+        if is_security_checkpoint(title, clean_markdown, url) is True:
+            logger.warning(f"Final checkpoint detected (Selenium) for {url}: {title}")
             return build_error_response(url, "selenium", "Blocked: Security checkpoint - bot verification required")
 
         return build_scrape_response(
