@@ -1,65 +1,81 @@
-"""Pytest configuration and shared fixtures
+"""Pytest configuration and fixtures"""
 
-This file contains fixtures and configuration that are shared across all tests.
-Fixtures here are automatically available to any test file without explicit import.
-"""
-
-import pytest
+import asyncio
 import os
 import sys
+import pytest
+from pathlib import Path
 
-# Add src to path so tests can import modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+
+@pytest.fixture(scope="session")
+def event_loop():
+    """Create event loop for async tests"""
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
 
 
 @pytest.fixture
 def sample_html():
-    """Sample HTML content for testing cleaners"""
+    """Sample HTML content for testing"""
     return """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Test Page</title>
-        <script>console.log('test');</script>
-        <style>body { margin: 0; }</style>
+        <title>Test Page Title</title>
+        <meta name="description" content="Test description">
     </head>
     <body>
-        <nav class="navigation">Navigation Link</nav>
-        <main>
-            <article>
-                <h1>Main Article Title</h1>
-                <p>This is the first paragraph with <strong>bold text</strong>.</p>
-                <p>This is the second paragraph with <a href="http://example.com">a link</a>.</p>
-                <h2>Subsection</h2>
-                <ul>
-                    <li>List item one</li>
-                    <li>List item two</li>
-                </ul>
-            </article>
-        </main>
-        <footer>Copyright 2025</footer>
+        <h1>Main Heading</h1>
+        <p>This is a paragraph with some text.</p>
+        <div class="content">
+            <h2>Sub Heading</h2>
+            <p>More content here.</p>
+            <a href="/page1">Link 1</a>
+            <a href="https://example.com/page2">External Link</a>
+        </div>
+        <nav>
+            <ul>
+                <li><a href="/home">Home</a></li>
+                <li><a href="/about">About</a></li>
+            </ul>
+        </nav>
+        <footer>
+            <p>Copyright 2024</p>
+        </footer>
     </body>
     </html>
     """
 
 
 @pytest.fixture
-def sample_search_results():
-    """Sample SearXNG search response for testing"""
+def checkpoint_html():
+    """HTML simulating a security checkpoint page"""
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Security Checkpoint - Verifying Your Browser</title>
+    </head>
+    <body>
+        <h1>Security Checkpoint</h1>
+        <p>Please wait while we verify your browser...</p>
+        <p>Wir überprüfen Ihren Browser</p>
+        <script src="https://vercel.link/security-checkpoint"></script>
+    </body>
+    </html>
+    """
+
+
+@pytest.fixture
+def block_responses():
+    """Various blocking/error responses"""
     return {
-        "query": "test search",
-        "results": [
-            {
-                "title": "Example Result 1",
-                "url": "https://example.com/1",
-                "content": "This is a snippet for result 1",
-                "engine": "brave"
-            },
-            {
-                "title": "Example Result 2",
-                "url": "https://example.com/2",
-                "content": "This is a snippet for result 2",
-                "engine": "bing"
-            }
-        ]
+        "captcha": "<title>CAPTCHA Verification</title><p>Prove you are human</p>",
+        "rate_limit": "<title>429 Too Many Requests</title><p>Rate limit exceeded</p>",
+        "blocked": "<title>Access Denied</title><p>You have been blocked</p>",
+        "cloudflare": "<title>Just a moment...</title><p>Checking your browser...</p>",
     }
