@@ -20,7 +20,7 @@ Documentation (via mcpdoc, namespaced as "docs_"):
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Optional
 from urllib.parse import urlparse
 
 from fastmcp import FastMCP, Context
@@ -31,7 +31,8 @@ from fastmcp.exceptions import ToolError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from loguru import logger
-from pydantic import Field, HttpUrl, ValidationError
+from pydantic import Field, HttpUrl, ValidationError, field_validator, BeforeValidator
+import json
 import os
 
 
@@ -992,18 +993,18 @@ async def crawl_site(
         description="Minimum word count for pages (50-1000)"
     )] = 100,
     # Filter chain options
-    include_patterns: Annotated[list[str] | None, Field(
-        description="URL patterns to include (e.g., ['*api*', '*reference*'])"
+    include_patterns: Annotated[Optional[str], Field(
+        description="URL patterns to include (comma-separated: '*api*,*reference*')"
     )] = None,
-    exclude_patterns: Annotated[list[str] | None, Field(
-        description="URL patterns to exclude (e.g., ['*deprecated*', '*v1*'])"
+    exclude_patterns: Annotated[Optional[str], Field(
+        description="URL patterns to exclude (comma-separated: '*v1*,*old*')"
     )] = None,
     # Best-First strategy options
     strategy: Annotated[Literal["bfs", "best_first"], Field(
         description="Crawling strategy: bfs (systematic) or best_first (prioritize relevant pages)"
     )] = "bfs",
-    keywords: Annotated[list[str] | None, Field(
-        description="Keywords for relevance scoring (required for best_first strategy)"
+    keywords: Annotated[Optional[str], Field(
+        description="Keywords for relevance scoring (comma-separated: 'api,tutorial')"
     )] = None,
     ctx: Context | None = None
 ) -> dict:
@@ -1055,6 +1056,41 @@ async def crawl_site(
             f"URL is not allowed for security reasons: {parsed.netloc} "
             f"appears to be a private or internal address."
         )
+
+    # Robust parameter parsing - handle LLMs that serialize lists as JSON strings
+    def _parse_flex(value: str | None) -> list[str] | None:
+        """Parse flexible list parameter from string.
+
+        Handles:
+        - JSON arrays: '["a","b"]' -> ['a', 'b']
+        - Comma-separated: 'a,b' -> ['a', 'b']
+        - Single value: 'a' -> ['a']
+        - None: None
+        """
+        if value is None:
+            return None
+
+        value = value.strip()
+
+        # Try parsing as JSON array first (LLM bug scenario)
+        if value.startswith("[") and value.endswith("]"):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return [str(v).strip() for v in parsed if str(v).strip()]
+            except json.JSONDecodeError:
+                pass
+
+        # Fall back to comma-separated
+        if "," in value:
+            return [v.strip() for v in value.split(",") if v.strip()]
+
+        # Single value
+        return [value]
+
+    include_patterns = _parse_flex(include_patterns)
+    exclude_patterns = _parse_flex(exclude_patterns)
+    keywords = _parse_flex(keywords)
 
     if ctx:
         await ctx.info(f"Deep crawling: {url} (strategy={strategy}, max_depth={max_depth}, max_pages={max_pages})")
