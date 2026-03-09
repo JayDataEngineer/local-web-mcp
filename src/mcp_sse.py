@@ -891,9 +891,9 @@ async def map_domain(
     pattern: Annotated[str, Field(
         description="URL pattern filter (e.g., '*/blog/*' for blog posts, '*' for all)"
     )] = "*",
-    max_urls: Annotated[int, Field(
-        description="Maximum URLs to return (1-10000)"
-    )] = 1000,
+    max_urls: Annotated[int | None, Field(
+        description="Maximum URLs to return (None = unlimited)"
+    )] = None,
     extract_head: Annotated[bool, Field(
         description="Extract metadata from <head> section (slower but richer)"
     )] = False,

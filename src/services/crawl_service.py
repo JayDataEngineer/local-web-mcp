@@ -61,7 +61,7 @@ class MapConfig:
     pattern: str = "*"  # URL pattern filter (e.g., "*/blog/*")
     extract_head: bool = False  # Extract metadata from <head>
     live_check: bool = False  # Verify URLs are accessible
-    max_urls: int = 1000  # Maximum URLs to return
+    max_urls: int | None = None  # Maximum URLs to return (None = unlimited)
     concurrency: int = 10  # Parallel workers
     query: str | None = None  # Search query for BM25 scoring
     scoring_method: str | None = None  # "bm25" for relevance scoring
@@ -200,11 +200,14 @@ class MapCrawlService:
 
             logger.info(f"Discovered {len(urls)} total URLs, {len(valid_urls)} valid")
 
+            # Apply max_urls limit if set
+            limited_urls = valid_urls[:config.max_urls] if config.max_urls is not None else valid_urls
+
             return MapResult(
                 domain=domain,
                 total_urls=len(urls),
                 valid_urls=len(valid_urls),
-                urls=valid_urls[:config.max_urls],
+                urls=limited_urls,
                 source_used=config.source,
             )
 
@@ -308,8 +311,8 @@ class MapCrawlService:
                 logger.debug(f"Failed to fetch {sitemap_url}: {e}")
                 continue
 
-        # Filter to max_urls
-        valid_urls = urls[:config.max_urls]
+        # Filter to max_urls (None = unlimited)
+        valid_urls = urls[:config.max_urls] if config.max_urls is not None else urls
 
         return MapResult(
             domain=domain,
@@ -380,11 +383,14 @@ class MapCrawlService:
                 # Accept URLs with status="valid" or status="unknown"
                 valid_urls = [u for u in urls if u.get("status") in ("valid", "unknown")]
 
+                # Apply max_urls limit if set
+                limited_urls = valid_urls[:config.max_urls] if config.max_urls is not None else valid_urls
+
                 output[domain] = MapResult(
                     domain=domain,
                     total_urls=len(urls),
                     valid_urls=len(valid_urls),
-                    urls=valid_urls[:config.max_urls],
+                    urls=limited_urls,
                     source_used=config.source,
                 )
 
