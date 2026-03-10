@@ -58,15 +58,11 @@ class LamaReranker:
             reranked = []
             for item in data.get("results", []):
                 idx = item.get("index")
-                score = item.get("relevance_score", 0)
                 if 0 <= idx < len(results):
-                    result = results[idx]
-                    # Add relevance score as metadata
-                    if hasattr(result, '__dict__'):
-                        result.relevance_score = score
-                    reranked.append(result)
+                    reranked.append(results[idx])
 
-            logger.info(f"Reranked {len(reranked)} results, top score: {max([r.get('relevance_score', 0) for r in data.get('results', [])], default=0):.4f}")
+            top_score = data.get("results", [{}])[0].get("relevance_score", 0) if data.get("results") else 0
+            logger.info(f"Reranked {len(reranked)} results, top score: {top_score:.4f}")
 
             return reranked
 
