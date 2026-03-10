@@ -36,9 +36,15 @@ class LamaReranker:
         if not results:
             return results
 
+        # Limit reranking to top 20 for performance (2080 context window)
+        # Processing all results is too slow on CPU
+        rerank_limit = 20
+        results_to_rerank = results[:rerank_limit]
+        remaining_results = results[rerank_limit:] if len(results) > rerank_limit else []
+
         # Prepare documents for reranking
         documents = [
-            f"{r.title}. {r.snippet}" for r in results
+            f"{r.title}. {r.snippet}" for r in results_to_rerank
         ]
 
         try:
@@ -58,11 +64,14 @@ class LamaReranker:
             reranked = []
             for item in data.get("results", []):
                 idx = item.get("index")
-                if 0 <= idx < len(results):
-                    reranked.append(results[idx])
+                if 0 <= idx < len(results_to_rerank):
+                    reranked.append(results_to_rerank[idx])
 
             top_score = data.get("results", [{}])[0].get("relevance_score", 0) if data.get("results") else 0
             logger.info(f"Reranked {len(reranked)} results, top score: {top_score:.4f}")
+
+            # Append non-reranked results
+            reranked.extend(remaining_results)
 
             return reranked
 
