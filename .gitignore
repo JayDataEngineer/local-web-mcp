@@ -44,3 +44,7 @@ UPDATES.md
 docs_config.yaml
 CLAUDE.md
 reference
+llm_models/
+benchmark_*.sh
+quick_bench.sh
+run_tps_bench.sh
