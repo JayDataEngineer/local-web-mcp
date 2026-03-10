@@ -150,18 +150,38 @@ mcp.add_middleware(ErrorHandlingMiddleware(
 
 # Add response caching middleware with Redis backend
 # Note: Streaming endpoints are automatically excluded by FastMCP
-# Note: Per-tool TTL configuration is done via included_tools list
+# Note: Using explicit allowlist for tools - dynamic operations (map_domain, crawl_site)
+#       are excluded to ensure fresh data on each call
 if redis_store:
     try:
         mcp.add_middleware(ResponseCachingMiddleware(
             cache_storage=redis_store,
             call_tool_settings={
                 "enabled": True,
-                "ttl": SCRAPE_CACHE_TTL,  # Default TTL for all tools
+                "ttl": SCRAPE_CACHE_TTL,
+                "included_tools": [  # Explicit allowlist - cache only stable operations
+                    "search_web",
+                    "scrape_url",
+                    "scrape_structured",
+                    "docs_fetch_docs",
+                    "docs_list_sources",
+                    "list_schemas",
+                    "get_domains",
+                ],
+                # Excluded from caching (fresh results each call):
+                # - map_domain: Sitemaps change frequently, need fresh discovery
+                # - crawl_site: Dynamic link discovery, content changes
+                # - clean_database: Must always execute
             },
             list_tools_settings={"enabled": True, "ttl": SEARCH_CACHE_TTL},
         ))
-        logger.info(f"Response caching enabled (tools: {SCRAPE_CACHE_TTL}s, list: {SEARCH_CACHE_TTL}s)")
+        cached_tools = ", ".join([
+            "search_web", "scrape_url", "scrape_structured",
+            "docs_fetch_docs", "docs_list_sources", "list_schemas", "get_domains"
+        ])
+        logger.info(f"Response caching enabled ({SCRAPE_CACHE_TTL}s)")
+        logger.info(f"Cached tools: {cached_tools}")
+        logger.info(f"Uncached: map_domain, crawl_site, clean_database (always fresh)")
     except Exception as e:
         logger.warning(f"Failed to add caching middleware: {e}")
 

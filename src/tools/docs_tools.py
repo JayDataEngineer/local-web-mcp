@@ -12,7 +12,6 @@ from typing import Annotated
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
-from loguru import logger
 import re
 from urllib.parse import urlparse
 
@@ -49,7 +48,7 @@ def _normalize_path(path: str) -> str:
     )
 
 
-def _add_domains_from_content(content: str, base_url: str) -> None:
+async def _add_domains_from_content(content: str, base_url: str, ctx: Context | None = None) -> None:
     """Extract domains from markdown links and add to session allowlist."""
     global _session_allowed_domains
 
@@ -67,7 +66,8 @@ def _add_domains_from_content(content: str, base_url: str) -> None:
                 # Only add external domains (not the same as base)
                 if domain != base_domain and domain not in _session_allowed_domains:
                     _session_allowed_domains.add(domain)
-                    logger.debug(f"Added discovered domain to allowlist: {domain}")
+                    if ctx:
+                        await ctx.debug(f"Added discovered domain to allowlist: {domain}")
         except:
             pass
 
@@ -110,7 +110,7 @@ def _is_url_allowed(url: str, configured_domains: set[str]) -> bool:
     return False
 
 
-def _load_docs_sources() -> tuple[dict, set, set]:
+async def _load_docs_sources(ctx: Context | None = None) -> tuple[dict, set, set]:
     """Load documentation sources from YAML config file.
 
     Returns:
@@ -144,7 +144,8 @@ def _load_docs_sources() -> tuple[dict, set, set]:
             path = _normalize_path(s["llms_txt"])
             name = s.get("name", os.path.basename(path))
             if not os.path.exists(path):
-                logger.warning(f"Local docs file not found: {path}")
+                if ctx:
+                    await ctx.warning(f"Local docs file not found: {path}")
                 continue
             mapping[name] = f"file://{path}"
             allowed_local.add(path)
@@ -158,10 +159,12 @@ def _load_docs_sources() -> tuple[dict, set, set]:
         return mapping, allowed_local, allowed_domains
 
     except FileNotFoundError:
-        logger.warning(f"Docs config not found: {DOCS_CONFIG_PATH}")
+        if ctx:
+            await ctx.warning(f"Docs config not found: {DOCS_CONFIG_PATH}")
         return {}, set(), set()
     except Exception as e:
-        logger.warning(f"Failed to load docs config: {e}")
+        if ctx:
+            await ctx.warning(f"Failed to load docs config: {e}")
         return {}, set(), set()
 
 
@@ -191,7 +194,7 @@ async def docs_list_sources(ctx: Context | None = None) -> str:
     if ctx:
         await ctx.debug("Loading documentation sources")
 
-    sources, _, _ = _load_docs_sources()
+    sources, _, _ = await _load_docs_sources(ctx)
     if not sources:
         return "No documentation sources configured."
 
@@ -246,7 +249,7 @@ async def docs_fetch_docs(
         configurable TTL.
     """
     # Get allowed local files and domains for security
-    _, allowed_local_files, allowed_domains = _load_docs_sources()
+    _, allowed_local_files, allowed_domains = await _load_docs_sources(ctx)
     url_or_path = url.strip()
 
     # Handle local file paths
@@ -341,7 +344,7 @@ async def docs_fetch_docs(
             await ctx.info(f"Fetched {word_count} words of documentation")
 
         # Extract domains from links in the content and add to session allowlist
-        _add_domains_from_content(markdown, url)
+        await _add_domains_from_content(markdown, url, ctx)
 
         return markdown
 
@@ -364,5 +367,6 @@ async def docs_fetch_docs(
     except ToolError:
         raise  # Re-raise ToolError as-is (user-facing message)
     except Exception as e:
-        logger.error(f"Unexpected error fetching {url}: {e}")
+        if ctx:
+            await ctx.error(f"Unexpected error fetching {url}: {e}")
         raise ToolError(f"Unexpected error when processing {url}")

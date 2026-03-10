@@ -10,7 +10,6 @@ from typing import Annotated, Literal, Optional
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
-from loguru import logger
 import json
 
 
@@ -141,7 +140,8 @@ async def map_domain(
         Dictionary with domain, total URLs found, and list of URLs with metadata
 
     Note:
-        Results are NOT cached - each call performs fresh discovery.
+        Results are NOT cached - each call performs fresh sitemap discovery.
+        This ensures you get the latest URL structure as sitemaps change frequently.
     """
     from ..services.crawl_service import MapConfig
 
@@ -259,7 +259,9 @@ async def crawl_site(
         and max_pages (20) for testing, then increase as needed.
 
     Note:
-        Results are NOT cached due to dynamic nature of link discovery.
+        Results are NOT cached - each call performs fresh crawling.
+        This ensures you get the latest content, but be aware that repeated
+        calls to the same URL will re-crawl the site.
     """
     from ..services.crawl_service import CrawlConfig
 

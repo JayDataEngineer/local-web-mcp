@@ -12,7 +12,6 @@ from typing import Annotated, Literal, Optional
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
-from loguru import logger
 
 
 # Cache TTL from settings
