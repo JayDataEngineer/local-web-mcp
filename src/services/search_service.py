@@ -16,6 +16,7 @@ class UnifiedSearchService:
         self.searxng_url = searxng_url
         self.client = httpx.AsyncClient(timeout=HTTP_REQUEST_TIMEOUT, follow_redirects=True)
         self._db = None
+        self._reranker = None
 
     async def _get_db(self):
         """Lazy database initialization"""
@@ -57,9 +58,9 @@ class UnifiedSearchService:
         results = await self._fetch_results(query, pages, blacklisted, time_filter)
         unique_results = self._deduplicate(results)
 
-        # Apply flash re-ranking if requested
+        # Apply intelligent re-ranking if requested
         if rerank and unique_results:
-            unique_results = self._flash_rerank(query, unique_results)
+            unique_results = await self._llama_rerank(query, unique_results)
             logger.info(f"Re-ranked {len(unique_results)} results")
 
         # Apply top_k limit
@@ -77,73 +78,20 @@ class UnifiedSearchService:
             search_time_ms=round(search_time_ms, 2)
         )
 
-    def _flash_rerank(self, query: str, results: list[SearchResult]) -> list[SearchResult]:
-        """Flash re-ranking based on query term overlap and position
-
-        Prioritizes results where:
-        - Query terms appear in title (higher weight)
-        - Query terms appear early in title/snippet
-        - More query terms matched
+    async def _llama_rerank(self, query: str, results: list[SearchResult]) -> list[SearchResult]:
+        """Rerank results using Jina Reranker v3 via llama.cpp
 
         Args:
             query: Original search query
-            results: List of search results to re-rank
+            results: List of search results to rerank
 
         Returns:
             Re-ranked list of search results
         """
-        # Extract query terms (lowercase, remove common words)
-        query_lower = query.lower()
-        stop_words = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-                     "of", "with", "by", "from", "as", "is", "was", "are", "be", "been",
-                     "this", "that", "these", "those", "it", "its", "what", "which", "who"}
+        from .llama_reranker import get_reranker_service
 
-        query_terms = [w for w in re.findall(r"\b\w+\b", query_lower) if w not in stop_words and len(w) > 1]
-        if not query_terms:
-            return results
-
-        scored_results = []
-        for result in results:
-            score = 0.0
-            title_lower = result.title.lower()
-            snippet_lower = result.snippet.lower()
-
-            # Score based on term matches in title (highest weight)
-            for term in query_terms:
-                # Exact phrase in title - big bonus
-                if term in title_lower:
-                    # Position bonus: earlier in title = higher score
-                    first_pos = title_lower.find(term)
-                    position_bonus = 1.0 - (first_pos / len(title_lower)) * 0.5
-                    score += 2.0 * position_bonus
-
-                # Exact phrase in snippet
-                if term in snippet_lower:
-                    first_pos = snippet_lower.find(term)
-                    position_bonus = 1.0 - (first_pos / len(snippet_lower)) * 0.3
-                    score += 1.0 * position_bonus
-
-            # Domain authority bonus (common reputable sources)
-            domain = result.domain.lower()
-            authoritative_domains = {
-                "wikipedia.org", "github.com", "stackoverflow.com", "docs.",
-                "developer.mozilla.org", "python.org", "nodejs.org",
-                "mozilla.org", "w3.org", "mdn."
-            }
-            if any(d in domain for d in authoritative_domains):
-                score += 0.5
-
-            scored_results.append((result, score))
-
-        # Sort by score descending
-        scored_results.sort(key=lambda x: x[1], reverse=True)
-
-        # Log re-ranking changes
-        if len(scored_results) > 1:
-            top_score = scored_results[0][1]
-            logger.info(f"Flash re-rank: top score={top_score:.2f}, results={len(scored_results)}")
-
-        return [r for r, s in scored_results]
+        reranker = get_reranker_service()
+        return await reranker.rerank(query, results)
 
     async def _fetch_results(self, query: str, pages: int, blacklisted: set[str], time_filter: str | None = None) -> list[SearchResult]:
         """Fetch results from SearXNG with pagination
