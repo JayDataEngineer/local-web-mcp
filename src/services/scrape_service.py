@@ -1,33 +1,40 @@
-"""Unified scraping service with method routing, caching, and consistent output
+"""Unified scraping service with method routing and consistent output
 
 Flow:
-1. Check cache -> return cached result if available
-2. Rate limiting (max 3 concurrent per domain)
-3. Check blacklist -> reject if blacklisted
-4. Reddit -> special JSON API handler
-5. Check database -> use learned preference
-6. Try Crawl4AI (fast)
-7. Fallback to Selenium (stealth)
-8. Blacklist if both fail
+1. Rate limiting (max 3 concurrent per domain)
+2. Check blacklist -> reject if blacklisted
+3. Reddit -> special JSON API handler
+4. Check database -> use learned preference
+5. Try Crawl4AI (fast)
+6. Fallback to Selenium (stealth)
+7. Blacklist if both fail
+
+Note: Caching is handled by FastMCP's ResponseCachingMiddleware at the framework level.
+Note: Rate limiting uses in-memory semaphores (no Redis required).
+Note: Domain tracking uses PostgreSQL (shared with Celery workers).
 """
 
 from loguru import logger
 
 from ..models.unified import ScrapeRequest, ScrapeResponse, ScrapingMethod
 from ..services.content_cleaner import get_content_cleaner
-from ..services.rate_limit_service import get_rate_limit_service
+from ..utils.rate_limiter import get_rate_limiter
 from ..scrapers.base import scrape_with_fallback
 from ..utils import extract_domain, create_singleton_factory
 
 
 class UnifiedScrapeService:
-    """Unified scraping with consistent output format and caching"""
+    """Unified scraping with consistent output format
+
+    Caching is handled by FastMCP's ResponseCachingMiddleware at the framework level.
+    Rate limiting uses in-memory semaphores (no Redis required).
+    Domain tracking uses PostgreSQL (shared with Celery workers).
+    """
 
     def __init__(self, db=None, cleaner=None):
         self._db = db
         self._cleaner = cleaner
         self._db_instance = None
-        self._cache = None
 
     async def _get_db(self):
         if self._db is not None:
@@ -37,12 +44,6 @@ class UnifiedScrapeService:
             self._db_instance = await get_db()
         return self._db_instance
 
-    async def _get_cache(self):
-        if self._cache is None:
-            from ..services.cache_service import get_cache_service
-            self._cache = await get_cache_service()
-        return self._cache
-
     @property
     def cleaner(self):
         if self._cleaner is None:
@@ -50,38 +51,23 @@ class UnifiedScrapeService:
         return self._cleaner
 
     async def scrape(self, request: ScrapeRequest) -> ScrapeResponse:
-        """Main scrape entry point with routing, caching, and rate limiting"""
-        cache = await self._get_cache()
-
-        # Check cache
-        cached_result = await cache.get_scrape(request.url)
-        if cached_result:
-            logger.info(f"Cache HIT for scrape: {request.url}")
-            response = self._dict_to_response(cached_result)
-            response.cached = True
-            return response
-
-        logger.info(f"Cache MISS for scrape: {request.url}")
-
+        """Main scrape entry point with routing and rate limiting"""
         db = await self._get_db()
         domain = extract_domain(request.url)
-        rate_limiter = get_rate_limit_service()
+        rate_limiter = get_rate_limiter()
 
         # Try with rate limiting
+        acquired = await rate_limiter.acquire(domain)
+        if not acquired:
+            return ScrapeResponse(
+                success=False,
+                url=request.url,
+                domain=domain,
+                method_used=ScrapingMethod.CRAWL4AI,
+                error="Rate limit: Too many concurrent requests to this domain.",
+            )
+
         try:
-            if rate_limiter._redis is None:
-                await rate_limiter._get_redis()
-
-            acquired = await rate_limiter.acquire(domain)
-            if not acquired:
-                return ScrapeResponse(
-                    success=False,
-                    url=request.url,
-                    domain=domain,
-                    method_used=ScrapingMethod.CRAWL4AI,
-                    error="Rate limit: Too many concurrent requests to this domain.",
-                )
-
             result_dict = await scrape_with_fallback(
                 url=request.url,
                 cleaner=self.cleaner,
@@ -91,13 +77,7 @@ class UnifiedScrapeService:
                 text_only=request.text_only
             )
 
-            response = self._dict_to_response(result_dict)
-            response.cached = False
-
-            if response.success:
-                await cache.set_scrape(request.url, result_dict)
-
-            return response
+            return self._dict_to_response(result_dict)
 
         finally:
             await rate_limiter.release(domain)
@@ -121,10 +101,6 @@ class UnifiedScrapeService:
             metadata=data.get("metadata", {}),
             error=data.get("error"),
         )
-
-    async def close(self):
-        if self._cache:
-            await self._cache.close()
 
 
 # Singleton factory

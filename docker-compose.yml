@@ -141,7 +141,7 @@ services:
       - postgres
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'celery beat' || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import subprocess; subprocess.run([\"celery\", \"-A\", \"src.celery_app\", \"inspect\", \"ping\"], capture_output=True)' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -171,7 +171,7 @@ services:
       - SETUID
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/search || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

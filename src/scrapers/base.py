@@ -522,7 +522,7 @@ async def scrape_with_fallback(
     Args:
         url: URL to scrape
         cleaner: ContentCleaner instance
-        db: Database instance
+        db: Database instance (PostgreSQL)
         force_method: Force specific scraping method
         css_selector: Optional CSS selector for targeted extraction
         text_only: If True, disable images for faster loading
