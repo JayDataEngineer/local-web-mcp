@@ -6,8 +6,8 @@ import sys
 import pytest
 from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# Add src to path (conftest is in tests/pytest/, so we need to go up to project root)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 
 @pytest.fixture(scope="session")
