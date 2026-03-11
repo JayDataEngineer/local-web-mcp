@@ -12,8 +12,14 @@ from ..core.constants import (
     DEFAULT_HEADERS,
     CRAWL4AI_RETRY_COUNT,
     SELENIUM_RETRY_COUNT,
+    CRAWL4AI_MAX_CONCURRENT,
 )
 from ..utils import extract_domain
+
+
+# Semaphore to limit concurrent Crawl4AI browsers
+import asyncio
+_crawl4ai_semaphore = asyncio.Semaphore(CRAWL4AI_MAX_CONCURRENT)
 
 
 # Block detection patterns
@@ -198,102 +204,104 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only
     try:
         from crawl4ai import AsyncWebCrawler, BrowserConfig
 
-        # Build browser config with stealth mode (always enabled for anti-detection)
-        browser_config = BrowserConfig(
-            headless=True,
-            enable_stealth=True,  # Anti-fingerprinting
-            user_agent_mode="random",  # Random user agent
-            text_mode=text_only,  # Disable images if requested
-            verbose=False
-        )
-
-        async with AsyncWebCrawler(config=browser_config, verbose=False) as crawler:
-            result = await crawler.arun(
-                url=url,
-                word_count_threshold=CRAWL4AI_WORD_COUNT_THRESHOLD,
-                bypass_cache=True,
-                process_iframes=False,
-                # Anti-detection: add delay
-                mean_delay=0.3,
-                delay_before_return_html=0.2,
+        # Limit concurrent Crawl4AI browsers to prevent memory exhaustion
+        async with _crawl4ai_semaphore:
+            # Build browser config with stealth mode (always enabled for anti-detection)
+            browser_config = BrowserConfig(
+                headless=True,
+                enable_stealth=True,  # Anti-fingerprinting
+                user_agent_mode="random",  # Random user agent
+                text_mode=text_only,  # Disable images if requested
+                verbose=False
             )
 
-            if result.success:
-                domain = extract_domain(url)
-                html_content = result.html
-
-                # FAST CHECK: Get title and check for checkpoint BEFORE expensive cleaning
-                title = result.metadata.get("title", "") if hasattr(result, "metadata") else ""
-
-                # Quick checkpoint detection on raw title (fail fast)
-                if title and "checkpoint" in title.lower():
-                    logger.warning(f"Fast checkpoint detection for {url}: {title}")
-                    return build_error_response(url, "crawl4ai", "Blocked: Security checkpoint - bot verification required")
-
-                # Quick status code check
-                status_code = getattr(result, 'status_code', None)
-                if status_code and status_code >= 400:
-                    block_error = detect_blocking("", status_code)
-                    if block_error:
-                        logger.warning(f"Fast status code detection for {url}: {block_error}")
-                        return build_error_response(url, "crawl4ai", block_error)
-
-                # Quick HTML checkpoint check (before cleaning)
-                if is_security_checkpoint(title, html_content[:1000], url) is True:
-                    logger.warning(f"HTML checkpoint detected for {url}: {title}")
-                    return build_error_response(url, "crawl4ai", "Blocked: Security checkpoint - bot verification required")
-
-                # Now do expensive content cleaning
-                clean_markdown = cleaner.clean(html_content, url, css_selector)
-
-                # Quick quality check before content length checks
-                quality_error = is_low_quality_response(clean_markdown, url)
-                if quality_error:
-                    logger.warning(f"Low quality response for {url}: {quality_error}")
-                    # Don't fail immediately - might be a valid short page
-                    # But mark for potential retry with different method
-
-                # Check minimum content length
-                if len(clean_markdown) < MIN_CONTENT_LENGTH:
-                    # Try Crawl4AI's built-in markdown as fallback
-                    crawl4ai_md = result.markdown
-                    # Handle both string (older) and MarkdownGenerationResult (newer)
-                    if hasattr(crawl4ai_md, 'raw_markdown'):
-                        crawl4ai_md = crawl4ai_md.raw_markdown
-
-                    if len(crawl4ai_md) >= MIN_CONTENT_LENGTH:
-                        logger.info(f"Using Crawl4AI's markdown fallback for {url} ({len(crawl4ai_md)} chars)")
-                        clean_markdown = crawl4ai_md
-                    else:
-                        return build_content_too_short_response(url, "crawl4ai", len(clean_markdown))
-
-                # Final checkpoint check on cleaned content (catch anything missed)
-                if is_security_checkpoint(title, clean_markdown, url) is True:
-                    logger.warning(f"Final checkpoint detected for {url}: {title}")
-                    return build_error_response(url, "crawl4ai", "Blocked: Security checkpoint - bot verification required")
-
-                return build_scrape_response(
-                    success=True,
+            async with AsyncWebCrawler(config=browser_config, verbose=False) as crawler:
+                result = await crawler.arun(
                     url=url,
-                    method="crawl4ai",
-                    title=title,
-                    content=clean_markdown,
-                    metadata=_build_metadata(len(clean_markdown.split())),
+                    word_count_threshold=CRAWL4AI_WORD_COUNT_THRESHOLD,
+                    bypass_cache=True,
+                    process_iframes=False,
+                    # Anti-detection: add delay
+                    mean_delay=0.3,
+                    delay_before_return_html=0.2,
                 )
 
-        # If we get here, Crawl4AI didn't succeed - check for blocking
-        page_html = getattr(result, 'html', '') or ''
-        status_code = getattr(result, 'status_code', None)
-        block_error = detect_blocking(page_html, status_code)
+                if result.success:
+                    domain = extract_domain(url)
+                    html_content = result.html
 
-        if block_error:
-            logger.warning(f"Blocking detected for {url}: {block_error}")
-        else:
-            # Log generic failure with more details if available
-            error_detail = getattr(result, 'error_message', 'No details')
-            logger.warning(f"Crawl4AI failed for {url}: {error_detail}")
+                    # FAST CHECK: Get title and check for checkpoint BEFORE expensive cleaning
+                    title = result.metadata.get("title", "") if hasattr(result, "metadata") else ""
 
-        return build_error_response(url, "crawl4ai", block_error or "Scraping failed")
+                    # Quick checkpoint detection on raw title (fail fast)
+                    if title and "checkpoint" in title.lower():
+                        logger.warning(f"Fast checkpoint detection for {url}: {title}")
+                        return build_error_response(url, "crawl4ai", "Blocked: Security checkpoint - bot verification required")
+
+                    # Quick status code check
+                    status_code = getattr(result, 'status_code', None)
+                    if status_code and status_code >= 400:
+                        block_error = detect_blocking("", status_code)
+                        if block_error:
+                            logger.warning(f"Fast status code detection for {url}: {block_error}")
+                            return build_error_response(url, "crawl4ai", block_error)
+
+                    # Quick HTML checkpoint check (before cleaning)
+                    if is_security_checkpoint(title, html_content[:1000], url) is True:
+                        logger.warning(f"HTML checkpoint detected for {url}: {title}")
+                        return build_error_response(url, "crawl4ai", "Blocked: Security checkpoint - bot verification required")
+
+                    # Now do expensive content cleaning
+                    clean_markdown = cleaner.clean(html_content, url, css_selector)
+
+                    # Quick quality check before content length checks
+                    quality_error = is_low_quality_response(clean_markdown, url)
+                    if quality_error:
+                        logger.warning(f"Low quality response for {url}: {quality_error}")
+                        # Don't fail immediately - might be a valid short page
+                        # But mark for potential retry with different method
+
+                    # Check minimum content length
+                    if len(clean_markdown) < MIN_CONTENT_LENGTH:
+                        # Try Crawl4AI's built-in markdown as fallback
+                        crawl4ai_md = result.markdown
+                        # Handle both string (older) and MarkdownGenerationResult (newer)
+                        if hasattr(crawl4ai_md, 'raw_markdown'):
+                            crawl4ai_md = crawl4ai_md.raw_markdown
+
+                        if len(crawl4ai_md) >= MIN_CONTENT_LENGTH:
+                            logger.info(f"Using Crawl4AI's markdown fallback for {url} ({len(crawl4ai_md)} chars)")
+                            clean_markdown = crawl4ai_md
+                        else:
+                            return build_content_too_short_response(url, "crawl4ai", len(clean_markdown))
+
+                    # Final checkpoint check on cleaned content (catch anything missed)
+                    if is_security_checkpoint(title, clean_markdown, url) is True:
+                        logger.warning(f"Final checkpoint detected for {url}: {title}")
+                        return build_error_response(url, "crawl4ai", "Blocked: Security checkpoint - bot verification required")
+
+                    return build_scrape_response(
+                        success=True,
+                        url=url,
+                        method="crawl4ai",
+                        title=title,
+                        content=clean_markdown,
+                        metadata=_build_metadata(len(clean_markdown.split())),
+                    )
+
+                # If we get here, Crawl4AI didn't succeed - check for blocking
+                page_html = getattr(result, 'html', '') or ''
+                status_code = getattr(result, 'status_code', None)
+                block_error = detect_blocking(page_html, status_code)
+
+                if block_error:
+                    logger.warning(f"Blocking detected for {url}: {block_error}")
+                else:
+                    # Log generic failure with more details if available
+                    error_detail = getattr(result, 'error_message', 'No details')
+                    logger.warning(f"Crawl4AI failed for {url}: {error_detail}")
+
+                return build_error_response(url, "crawl4ai", block_error or "Scraping failed")
 
     except ImportError:
         logger.warning("Crawl4AI not installed")

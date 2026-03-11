@@ -28,6 +28,9 @@ BLACKLIST_FAILURE_THRESHOLD = 3
 CRAWL4AI_RETRY_COUNT = 3
 SELENIUM_RETRY_COUNT = 3
 
+# Crawl4AI browser concurrency limit (async MCP server)
+CRAWL4AI_MAX_CONCURRENT = 10
+
 # Search configuration
 DEFAULT_SEARCH_ENGINES = ["brave", "bing", "duckduckgo", "ask"]
 MAX_SEARCH_PAGES = 10

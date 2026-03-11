@@ -228,96 +228,99 @@ services:
 
   # =============================================================================
   # Llama.cpp LLM Server (FunctionGemma 270M UD-Q4_K_XL)
+  # DISABLED: Memory issues under heavy load
   # =============================================================================
-  llama-llm:
-    image: ghcr.io/ggml-org/llama.cpp:server
-    container_name: llama-llm
-    networks:
-      - mcp_net
-    volumes:
-      - ./llm_models:/models:ro
-    command:
-      - --model
-      - /models/functiongemma-270m-it-UD-Q4_K_XL.gguf
-      - --port
-      - "8080"
-      - --host
-      - 0.0.0.0
-      - --ctx-size
-      - "2080"
-      - --parallel
-      - "4"
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-        reservations:
-          memory: 512M
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+  # llama-llm:
+  #   image: ghcr.io/ggml-org/llama.cpp:server
+  #   container_name: llama-llm
+  #   networks:
+  #     - mcp_net
+  #   volumes:
+  #     - ./llm_models:/models:ro
+  #   command:
+  #     - --model
+  #     - /models/functiongemma-270m-it-UD-Q4_K_XL.gguf
+  #     - --port
+  #     - "8080"
+  #     - --host
+  #     - 0.0.0.0
+  #     - --ctx-size
+  #     - "2080"
+  #     - --parallel
+  #     - "4"
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 1G
+  #       reservations:
+  #         memory: 512M
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
 
   # =============================================================================
   # Llama.cpp Reranker Server (Jina Reranker v3 IQ4_NL)
+  # DISABLED: Memory issues under heavy load
   # =============================================================================
-  llama-reranker:
-    image: ghcr.io/ggml-org/llama.cpp:server
-    container_name: llama-reranker
-    networks:
-      - mcp_net
-    volumes:
-      - ./llm_models:/models:ro
-    command:
-      - --model
-      - /models/jina-reranker-v3-IQ4_NL.gguf
-      - --port
-      - "8082"
-      - --host
-      - 0.0.0.0
-      - --reranking
-      - --embeddings
-      - --pooling
-      - rank
-      - --ctx-size
-      - "2080"
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-        reservations:
-          memory: 512M
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+  # llama-reranker:
+  #   image: ghcr.io/ggml-org/llama.cpp:server
+  #   container_name: llama-reranker
+  #   networks:
+  #     - mcp_net
+  #   volumes:
+  #     - ./llm_models:/models:ro
+  #   command:
+  #     - --model
+  #     - /models/jina-reranker-v3-IQ4_NL.gguf
+  #     - --port
+  #     - "8082"
+  #     - --host
+  #     - 0.0.0.0
+  #     - --reranking
+  #     - --embeddings
+  #     - --pooling
+  #     - rank
+  #     - --ctx-size
+  #     - "2080"
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 1G
+  #       reservations:
+  #         memory: 512M
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
 
   # =============================================================================
   # Llama.cpp Router - Single entry point for all LLM services
+  # DISABLED: Memory issues under heavy load
   # =============================================================================
-  llama-router:
-    image: caddy:2
-    container_name: llama-router
-    networks:
-      - mcp_net
-    ports:
-      - "8090:8080"
-    volumes:
-      - ./llama_router_Caddyfile:/etc/caddy/Caddyfile:ro
-    restart: unless-stopped
-    depends_on:
-      - llama-llm
-      # - llama-embeddings  # Uncomment when embeddings are needed
-      - llama-reranker
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+  # llama-router:
+  #   image: caddy:2
+  #   container_name: llama-router
+  #   networks:
+  #     - mcp_net
+  #   ports:
+  #     - "8090:8080"
+  #   volumes:
+  #     - ./llama_router_Caddyfile:/etc/caddy/Caddyfile:ro
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - llama-llm
+  #     # - llama-embeddings  # Uncomment when embeddings are needed
+  #     - llama-reranker
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
 
   # =============================================================================
   # Llama.cpp Embeddings Server (Jina v5-small-clustering IQ4_NL)
