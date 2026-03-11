@@ -537,7 +537,27 @@ async def scrape_with_fallback(
 
     Returns dict response
     """
+    import time
+    start_time = time.time()
     domain = extract_domain(url)
+    final_method = "unknown"
+
+    # Helper to record metric
+    async def record_metric(success: bool, method: str, error: str = None, content: str = None):
+        try:
+            duration_ms = (time.time() - start_time) * 1000
+            await db.record_scrape_metric(
+                url=url,
+                domain=domain,
+                method=method,
+                success=success,
+                duration_ms=duration_ms,
+                content_length=len(content) if content else None,
+                error=error
+            )
+        except Exception as e:
+            # Don't fail the scrape if telemetry fails
+            logger.debug(f"Failed to record metric: {e}")
 
     # Special handler: PDF files
     if url.lower().endswith(".pdf") or "pdf" in url.lower():
@@ -545,6 +565,9 @@ async def scrape_with_fallback(
         result = await scrape_pdf(url)
         if result["success"]:
             await db.record_success(domain, "pdf")
+            await record_metric(True, "pdf", content=result.get("content"))
+        else:
+            await record_metric(False, "pdf", error=result.get("error"))
         return result
 
     # Check blacklist
@@ -562,11 +585,19 @@ async def scrape_with_fallback(
         result = await scrape_reddit(url)
         if result["success"]:
             await db.record_success(domain, "reddit_api")
+            await record_metric(True, "reddit_api", content=result.get("content"))
+        else:
+            await record_metric(False, "reddit_api", error=result.get("error"))
         return result
 
     # Force method? → Use it directly without retries
     if force_method:
-        return await _scrape_with_method(url, force_method, cleaner, css_selector, text_only)
+        result = await _scrape_with_method(url, force_method, cleaner, css_selector, text_only)
+        if result["success"]:
+            await record_metric(True, force_method, content=result.get("content"))
+        else:
+            await record_metric(False, force_method, error=result.get("error"))
+        return result
 
     # Check database for preferred method
     preferred = await db.get_domain_method(domain)
@@ -595,6 +626,7 @@ async def scrape_with_fallback(
             result = await scrape_selenium(url, cleaner, css_selector)
             if result["success"]:
                 await db.record_success(domain, "selenium")
+                await record_metric(True, "selenium", content=result.get("content"))
                 return result
             logger.warning(f"Selenium attempt {attempt} failed for {url}")
         # All Selenium attempts failed - continue to try Crawl4AI
@@ -614,12 +646,19 @@ async def scrape_with_fallback(
         result = await scrape_crawl4ai(url, cleaner, css_selector, text_only)
         if result["success"]:
             await db.record_success(domain, "crawl4ai")
+            await record_metric(True, "crawl4ai", content=result.get("content"))
             return result
 
         # Check for security checkpoint - immediate fallback if detected
         error_msg = result.get("error", "")
         if "Security checkpoint" in error_msg:
             logger.warning(f"Checkpoint detected on Crawl4AI attempt {attempt} - switching to Selenium immediately")
+            checkpoint_detected = True
+            break  # Skip remaining retries, go straight to Selenium
+
+        # Check for browser crash - immediate fallback, don't retry Crawl4AI
+        if "Target crashed" in error_msg or "crashed" in error_msg.lower():
+            logger.warning(f"Browser crash detected on Crawl4AI attempt {attempt} - switching to Selenium immediately (no retry)")
             checkpoint_detected = True
             break  # Skip remaining retries, go straight to Selenium
 
@@ -643,12 +682,14 @@ async def scrape_with_fallback(
             result = await scrape_selenium(url, cleaner, css_selector)
             if result["success"]:
                 await db.record_success(domain, "selenium")
+                await record_metric(True, "selenium", content=result.get("content"))
                 return result
             logger.warning(f"Selenium attempt {attempt} failed for {url}")
 
-    # All attempts failed - record failure
+    # All attempts failed - record failure and metric
     logger.error(f"All scraping attempts failed for {domain} (3x Crawl4AI + 3x Selenium)")
     await db.record_failure(domain, "all_methods_failed")
+    await record_metric(False, "all_methods_failed", error="All scraping methods failed")
 
     return build_scrape_response(
         success=False,

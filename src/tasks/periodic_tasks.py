@@ -56,7 +56,7 @@ def cleanup_blacklist(self, days_old: int = 7) -> dict:
     Returns:
         Dict with cleanup results
     """
-    count = self.run_async(self.db.cleanup_old_blacklisted(days_old))
+    count = self.run_async(lambda: self.db.cleanup_old_blacklisted(days_old))
     result = {
         "status": "success",
         "days_old": days_old,
@@ -78,7 +78,7 @@ def health_check(self) -> dict:
     """
     # Check Database
     try:
-        domains_count = self.run_async(self.db.get_all_domains())
+        domains_count = self.run_async(lambda: self.db.get_all_domains())
         db_status = "ok"
         count = len(domains_count)
     except Exception as e:
@@ -107,4 +107,28 @@ def health_check(self) -> dict:
     result["overall"] = overall_health
     logger.info(f"Health check completed: {overall_health} - DB: {db_status}, Redis: {redis_status.get('status')}, SearXNG: {searxng_status.get('status')}")
 
+    return result
+
+
+@app.task(bind=True, base=BaseTask, name="tasks.periodic.cleanup_old_metrics")
+def cleanup_old_metrics(self, days: int = 7) -> dict:
+    """
+    Periodic task to clean up old scrape metrics
+
+    Removes scrape metrics older than specified days to keep
+    the database size manageable.
+
+    Args:
+        days: Keep metrics newer than this many days (default: 7)
+
+    Returns:
+        Dict with cleanup results
+    """
+    count = self.run_async(lambda: self.db.cleanup_old_metrics(days))
+    result = {
+        "status": "success",
+        "days": days,
+        "metrics_removed": count
+    }
+    logger.info(f"Periodic metrics cleanup completed: {result}")
     return result

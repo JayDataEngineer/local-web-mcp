@@ -41,6 +41,11 @@ app.conf.update(
             'schedule': crontab(hour=2, minute=0),  # 2 AM daily
             'kwargs': {'days_old': 7},  # Remove domains older than 7 days
         },
+        'cleanup-old-metrics-daily': {
+            'task': 'tasks.periodic.cleanup_old_metrics',
+            'schedule': crontab(hour=3, minute=0),  # 3 AM daily
+            'kwargs': {'days': 7},  # Keep metrics for 7 days
+        },
     },
 )
 
@@ -55,6 +60,7 @@ def setup_periodic_tasks(sender, **kwargs):
     """Setup periodic tasks - this is where Beat registers them"""
     logger.info("Celery Beat periodic tasks configured:")
     logger.info("  - cleanup_blacklist: Daily at 2 AM (removes blacklisted domains >7 days old)")
+    logger.info("  - cleanup_old_metrics: Daily at 3 AM (removes scrape metrics >7 days old)")
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # MCP Server
+  # MCP Server (runs browser-based scraping - needs more memory)
   mcp-server:
     build: .
     container_name: mcp-server
@@ -50,9 +50,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 8G
         reservations:
-          memory: 256M
+          memory: 2G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s

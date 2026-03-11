@@ -1,8 +1,8 @@
-"""SQLAlchemy ORM models for domain tracking"""
+"""SQLAlchemy ORM models for domain tracking and telemetry"""
 
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, Boolean, Integer, DateTime, func, Index
+from sqlalchemy import String, Boolean, Integer, DateTime, Float, func, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -53,4 +53,45 @@ class Domain(Base):
             "last_failure": self.last_failure.isoformat() if self.last_failure else None,
             "failure_count": self.failure_count,
             "is_blacklisted": self.is_blacklisted,
+        }
+
+
+class ScrapeMetric(Base):
+    """Telemetry model for tracking scrape request metrics"""
+    __tablename__ = "scrape_metrics"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    method: Mapped[str] = mapped_column(String(50), nullable=False)  # crawl4ai, selenium, pdf, reddit_api
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False, index=True)
+    duration_ms: Mapped[float] = mapped_column(Float, nullable=False)  # Duration in milliseconds
+    content_length: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Characters returned
+    error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # Error message if failed
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True
+    )
+
+    # Indexes for common queries
+    __table_args__ = (
+        Index("idx_metrics_domain_created", "domain", "created_at"),
+        Index("idx_metrics_success_created", "success", "created_at"),
+        Index("idx_metrics_method_created", "method", "created_at"),
+    )
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary"""
+        return {
+            "id": self.id,
+            "url": self.url,
+            "domain": self.domain,
+            "method": self.method,
+            "success": self.success,
+            "duration_ms": self.duration_ms,
+            "content_length": self.content_length,
+            "error": self.error,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }

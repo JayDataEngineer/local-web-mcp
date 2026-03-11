@@ -29,7 +29,8 @@ CRAWL4AI_RETRY_COUNT = 3
 SELENIUM_RETRY_COUNT = 3
 
 # Crawl4AI browser concurrency limit (async MCP server)
-CRAWL4AI_MAX_CONCURRENT = 10
+# Reduced due to "Target crashed" errors under load - Playwright browsers are memory heavy
+CRAWL4AI_MAX_CONCURRENT = 5
 
 # Search configuration
 DEFAULT_SEARCH_ENGINES = ["brave", "bing", "duckduckgo", "ask"]

@@ -79,6 +79,20 @@ class UnifiedScrapeService:
 
             return self._dict_to_response(result_dict)
 
+        except Exception as e:
+            # Catch any unexpected exceptions to prevent TaskGroup errors
+            from loguru import logger
+
+            logger.error(f"Unexpected error in scrape_service for {request.url}: {e}")
+
+            return ScrapeResponse(
+                success=False,
+                url=request.url,
+                domain=domain,
+                method_used=ScrapingMethod.CRAWL4AI,
+                error=f"Internal error: {str(e)[:200]}" if len(str(e)) < 200 else "Internal error during scraping",
+            )
+
         finally:
             await rate_limiter.release(domain)
 

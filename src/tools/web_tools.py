@@ -248,23 +248,46 @@ async def scrape_url(
     except ValueError as e:
         raise ToolError(f"Invalid scraping method: {e}")
 
-    result = await scrape_svc.scrape(request)
+    try:
+        result = await scrape_svc.scrape(request)
 
-    response = {
-        "url": result.url,
-        "success": result.success,
-        "method_used": result.method_used.value if result.method_used else None,
-        "title": result.title,
-        "content": result.content,
-        "word_count": result.metadata.get("word_count", 0) if result.metadata else 0,
-    }
+        response = {
+            "url": result.url,
+            "success": result.success,
+            "method_used": result.method_used.value if result.method_used else None,
+            "title": result.title,
+            "content": result.content,
+            "word_count": result.metadata.get("word_count", 0) if result.metadata else 0,
+        }
 
-    if not result.success and result.error:
-        response["error"] = result.error
+        if not result.success and result.error:
+            response["error"] = result.error
+            if ctx:
+                await ctx.error(f"Scrape failed: {result.error}")
+
+        return response
+    except Exception as e:
+        # Catch ANY exception to prevent TaskGroup errors from propagating
+        import traceback
+        from loguru import logger
+
+        logger.error(f"Unexpected error in scrape_url for {url}: {e}")
+        logger.debug(f"Traceback: {traceback.format_exc()}")
+
+        error_msg = str(e) if len(str(e)) < 200 else "Internal error during scraping"
+
         if ctx:
-            await ctx.error(f"Scrape failed: {result.error}")
+            await ctx.error(f"Scrape error: {error_msg}")
 
-    return response
+        return {
+            "url": url,
+            "success": False,
+            "method_used": None,
+            "title": None,
+            "content": "",
+            "word_count": 0,
+            "error": error_msg
+        }
 
 
 async def scrape_structured(

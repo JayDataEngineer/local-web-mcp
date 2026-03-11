@@ -9,10 +9,10 @@ from loguru import logger
 import os
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy import select, update, delete, func
+from sqlalchemy import select, update, delete, func, case
 from sqlalchemy.orm import selectinload
 
-from .models import Domain
+from .models import Domain, ScrapeMetric
 from ..core.constants import BLACKLIST_FAILURE_THRESHOLD
 
 
@@ -393,6 +393,208 @@ class Database:
                 session.add(new_domain)
 
             await session.commit()
+
+    # ========== Telemetry Methods ==========
+
+    async def record_scrape_metric(
+        self,
+        url: str,
+        domain: str,
+        method: str,
+        success: bool,
+        duration_ms: float,
+        content_length: int = None,
+        error: str = None
+    ):
+        """Record a scrape metric for telemetry
+
+        Args:
+            url: The URL that was scraped
+            domain: The domain of the URL
+            method: The scraping method used (crawl4ai, selenium, pdf, reddit_api)
+            success: Whether the scrape succeeded
+            duration_ms: Duration in milliseconds
+            content_length: Length of content returned (if successful)
+            error: Error message (if failed)
+        """
+        from ..utils import extract_domain
+
+        # Ensure domain is extracted properly
+        if not domain or "." not in domain:
+            domain = extract_domain(url)
+
+        async with self._get_session() as session:
+            metric = ScrapeMetric(
+                url=url[:2048],  # Truncate if too long
+                domain=domain[:255],
+                method=method,
+                success=success,
+                duration_ms=duration_ms,
+                content_length=content_length,
+                error=error[:500] if error else None
+            )
+            session.add(metric)
+            await session.commit()
+
+    async def get_scrape_stats(self, hours: int = 24) -> dict:
+        """Get scrape statistics for the past N hours
+
+        Args:
+            hours: Number of hours to look back (default: 24)
+
+        Returns:
+            Dict with statistics including totals, averages, success rate
+        """
+        from datetime import timedelta
+
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+
+        async with self._get_session() as session:
+            # Total scrapes
+            total_result = await session.execute(
+                select(func.count())
+                .select_from(ScrapeMetric)
+                .where(ScrapeMetric.created_at >= cutoff_time)
+            )
+            total = total_result.scalar() or 0
+
+            # Successful scrapes
+            success_result = await session.execute(
+                select(func.count())
+                .select_from(ScrapeMetric)
+                .where(ScrapeMetric.created_at >= cutoff_time)
+                .where(ScrapeMetric.success == True)
+            )
+            successful = success_result.scalar() or 0
+
+            # Failed scrapes
+            failed = total - successful
+
+            # Average duration
+            avg_duration_result = await session.execute(
+                select(func.avg(ScrapeMetric.duration_ms))
+                .select_from(ScrapeMetric)
+                .where(ScrapeMetric.created_at >= cutoff_time)
+            )
+            avg_duration = avg_duration_result.scalar() or 0
+
+            # Average duration by success
+            avg_success_duration_result = await session.execute(
+                select(func.avg(ScrapeMetric.duration_ms))
+                .select_from(ScrapeMetric)
+                .where(ScrapeMetric.created_at >= cutoff_time)
+                .where(ScrapeMetric.success == True)
+            )
+            avg_success_duration = avg_success_duration_result.scalar() or 0
+
+            avg_fail_duration_result = await session.execute(
+                select(func.avg(ScrapeMetric.duration_ms))
+                .select_from(ScrapeMetric)
+                .where(ScrapeMetric.created_at >= cutoff_time)
+                .where(ScrapeMetric.success == False)
+            )
+            avg_fail_duration = avg_fail_duration_result.scalar() or 0
+
+            # Count by method
+            by_method_result = await session.execute(
+                select(
+                    ScrapeMetric.method,
+                    func.count().label('count'),
+                    func.avg(ScrapeMetric.duration_ms).label('avg_duration'),
+                    func.sum(case((ScrapeMetric.success == True, 1), else_=0)).label('successes')
+                )
+                .select_from(ScrapeMetric)
+                .where(ScrapeMetric.created_at >= cutoff_time)
+                .group_by(ScrapeMetric.method)
+            )
+            by_method = []
+            for row in by_method_result:
+                by_method.append({
+                    "method": row.method,
+                    "count": row.count,
+                    "avg_duration_ms": round(row.avg_duration, 2) if row.avg_duration else 0,
+                    "successes": row.successes or 0,
+                    "failures": row.count - (row.successes or 0)
+                })
+
+            # Top failing domains
+            top_fails_result = await session.execute(
+                select(
+                    ScrapeMetric.domain,
+                    func.count().label('fail_count')
+                )
+                .select_from(ScrapeMetric)
+                .where(ScrapeMetric.created_at >= cutoff_time)
+                .where(ScrapeMetric.success == False)
+                .group_by(ScrapeMetric.domain)
+                .order_by(func.count().desc())
+                .limit(10)
+            )
+            top_failing = [
+                {"domain": row.domain, "failures": row.fail_count}
+                for row in top_fails_result
+            ]
+
+            # Percentiles (p50, p95, p99)
+            p50_result = await session.execute(
+                select(func.percentile_cont(0.5).within_group(ScrapeMetric.duration_ms))
+                .select_from(ScrapeMetric)
+                .where(ScrapeMetric.created_at >= cutoff_time)
+            )
+            p50 = p50_result.scalar() or 0
+
+            p95_result = await session.execute(
+                select(func.percentile_cont(0.95).within_group(ScrapeMetric.duration_ms))
+                .select_from(ScrapeMetric)
+                .where(ScrapeMetric.created_at >= cutoff_time)
+            )
+            p95 = p95_result.scalar() or 0
+
+            p99_result = await session.execute(
+                select(func.percentile_cont(0.99).within_group(ScrapeMetric.duration_ms))
+                .select_from(ScrapeMetric)
+                .where(ScrapeMetric.created_at >= cutoff_time)
+            )
+            p99 = p99_result.scalar() or 0
+
+            return {
+                "period_hours": hours,
+                "total_scrapes": total,
+                "successful": successful,
+                "failed": failed,
+                "success_rate": round(successful / total * 100, 2) if total > 0 else 0,
+                "avg_duration_ms": round(avg_duration, 2),
+                "avg_success_duration_ms": round(avg_success_duration, 2),
+                "avg_fail_duration_ms": round(avg_fail_duration, 2),
+                "p50_ms": round(p50, 2),
+                "p95_ms": round(p95, 2),
+                "p99_ms": round(p99, 2),
+                "by_method": by_method,
+                "top_failing_domains": top_failing,
+            }
+
+    async def cleanup_old_metrics(self, days: int = 7) -> int:
+        """Remove scrape metrics older than specified days
+
+        Args:
+            days: Keep metrics newer than this many days
+
+        Returns:
+            Number of metrics removed
+        """
+        from datetime import timedelta
+
+        cutoff_date = datetime.now() - timedelta(days=days)
+
+        async with self._get_session() as session:
+            result = await session.execute(
+                delete(ScrapeMetric)
+                .where(ScrapeMetric.created_at < cutoff_date)
+            )
+            await session.commit()
+            count = result.rowcount
+            logger.info(f"Cleaned up {count} scrape metrics older than {days} days")
+            return count
 
 
 # Singleton
