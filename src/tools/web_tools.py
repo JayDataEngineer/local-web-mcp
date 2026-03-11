@@ -117,7 +117,7 @@ async def search_web(
     )] = None,
     rerank: Annotated[bool, Field(
         description="Apply flash re-ranking based on query relevance"
-    )] = False,
+    )] = True,
     time_filter: Annotated[Literal["day", "week", "month", "year"] | None, Field(
         description="Filter results by time: day (24h), week (7d), month (30d), year (365d)"
     )] = None,
