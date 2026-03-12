@@ -2,6 +2,7 @@
 
 Administrative tools for managing the MCP server.
 - get_domains: List tracked domains with preferred methods
+- clear_blacklist: Clear all blacklisted domains (unblock them)
 - get_scrape_stats: View scrape statistics and metrics
 - clean_database: Clear all domain tracking data
 
@@ -114,4 +115,58 @@ async def clean_database(ctx: Context | None = None) -> dict:
     return {
         "status": "success",
         "records_removed": count
+    }
+
+
+async def clear_blacklist(ctx: Context | None = None) -> dict:
+    """Clear all blacklisted domains - unblock them immediately
+
+    This resets the blacklist for ALL domains, allowing them to be
+    scraped again. Useful if domains were incorrectly blacklisted
+    or if you want to retry after fixing connection issues.
+
+    The changes take effect immediately - no server restart required.
+    Also clears the FastMCP response cache so unblocked domains work immediately.
+
+    Returns:
+        Dictionary with status and count of unblacklisted domains
+
+    Note:
+        This is a safer alternative to clean_database which removes
+        all learned data. clear_blacklist only resets the blacklist
+        while keeping learned scraping methods.
+    """
+    if ctx:
+        await ctx.info("Clearing all blacklisted domains...")
+
+    # Get db from lifespan context with safe access
+    db = ctx.lifespan_context.get("db")
+    if not db:
+        raise ToolError("Database service not available")
+
+    # Get Redis client for cache clearing
+    redis = None
+    try:
+        from key_value.aio.stores.redis import RedisStore
+        from ..settings import get_settings
+        settings = get_settings()
+        redis = RedisStore(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            password=settings.redis_password,
+            db=0,
+        )
+        redis = await redis.get_client()
+    except Exception as e:
+        from loguru import logger
+        logger.debug(f"Redis client not available for cache clearing: {e}")
+
+    count = await db.clear_blacklist(redis=redis)
+
+    if ctx:
+        await ctx.info(f"Cleared blacklist for {count} domains")
+
+    return {
+        "status": "success",
+        "domains_unblacklisted": count
     }

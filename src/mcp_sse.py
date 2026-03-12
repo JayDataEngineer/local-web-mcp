@@ -11,6 +11,7 @@ Web Research Tools:
 - scrape_structured: Extract structured JSON data using pre-built schemas (NEW)
 - list_schemas: List available extraction schemas (NEW)
 - get_domains: List tracked domains with preferred methods
+- clear_blacklist: Clear all blacklisted domains (unblock them)
 - clean_database: Clear all domain tracking data
 
 Documentation (via mcpdoc, namespaced as "docs_"):
@@ -167,6 +168,7 @@ if redis_store:
                     "docs_list_sources",
                     "list_schemas",
                     "get_domains",
+                    "clear_blacklist",
                 ],
                 # Excluded from caching (fresh results each call):
                 # - map_domain: Sitemaps change frequently, need fresh discovery
@@ -177,7 +179,7 @@ if redis_store:
         ))
         cached_tools = ", ".join([
             "search_web", "scrape_url", "scrape_structured",
-            "docs_fetch_docs", "docs_list_sources", "list_schemas", "get_domains"
+            "docs_fetch_docs", "docs_list_sources", "list_schemas", "get_domains", "clear_blacklist"
         ])
         logger.info(f"Response caching enabled ({SCRAPE_CACHE_TTL}s)")
         logger.info(f"Cached tools: {cached_tools}")
@@ -227,7 +229,7 @@ mcp.http_app = http_app_with_middleware
 from .tools.web_tools import search_web, scrape_url, scrape_structured, list_schemas
 from .tools.crawl_tools import map_domain, crawl_site
 from .tools.docs_tools import docs_list_sources, docs_fetch_docs
-from .tools.admin_tools import get_domains, clean_database
+from .tools.admin_tools import get_domains, clean_database, clear_blacklist
 
 # Register all tools with FastMCP
 mcp.add_tool(search_web)
@@ -239,6 +241,7 @@ mcp.add_tool(crawl_site)
 mcp.add_tool(docs_list_sources)
 mcp.add_tool(docs_fetch_docs)
 mcp.add_tool(get_domains)
+mcp.add_tool(clear_blacklist)
 mcp.add_tool(clean_database)
 
 
@@ -254,7 +257,7 @@ if __name__ == "__main__":
     logger.info(f"Via MagicDNS+Caddy: https://<hostname>.<tailnet>.ts.net/mcp")
     logger.info(f"Session state: Redis @ {REDIS_HOST}:{REDIS_PORT}")
     logger.info(f"Caching: enabled (search: {SEARCH_CACHE_TTL}s, scrape: {SCRAPE_CACHE_TTL}s)")
-    logger.info(f"Web tools: search_web, scrape_url, map_domain, crawl_site, scrape_structured, list_schemas, get_domains, clean_database")
+    logger.info(f"Web tools: search_web, scrape_url, map_domain, crawl_site, scrape_structured, list_schemas, get_domains, clear_blacklist, clean_database")
     logger.info(f"Docs tools: docs_list_sources, docs_fetch_docs")
 
     mcp.run(transport="http", host=host, port=port)

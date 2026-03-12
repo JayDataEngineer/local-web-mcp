@@ -73,7 +73,7 @@ class Database:
         self._sessionmaker = async_sessionmaker(
             self._engine,
             class_=AsyncSession,
-            expire_on_commit=False,
+            expire_on_commit=True,  # Force fresh queries after commit (fixes stale blacklist cache)
         )
 
         # Create tables
@@ -274,6 +274,62 @@ class Database:
 
             count = delete_result.rowcount
             logger.info(f"Cleaned up {count} blacklisted domains older than {days_old} days")
+            return count
+
+    async def clear_blacklist(self, redis=None) -> int:
+        """Clear ALL blacklisted domains - unblacklist everything immediately
+
+        This is useful when you want to reset the blacklist and allow
+        retrying all domains that were previously blocked.
+
+        Args:
+            redis: Optional Redis client to clear FastMCP cache. If provided,
+                   will invalidate cached responses for unblacklisted domains.
+
+        Returns:
+            Number of domains that were unblacklisted
+        """
+        async with self._get_session() as session:
+            # Find all blacklisted domains
+            result = await session.execute(
+                select(Domain).where(Domain.is_blacklisted == True)
+            )
+            blacklisted = result.scalars().all()
+
+            if not blacklisted:
+                return 0
+
+            # Collect domain names for cache clearing
+            domain_names = [d.domain for d in blacklisted]
+
+            # Update all to unblacklisted
+            count = 0
+            for domain in blacklisted:
+                domain.is_blacklisted = False
+                domain.failure_count = 0
+                count += 1
+
+            await session.commit()
+
+            # Clear FastMCP response cache for affected domains
+            if redis and domain_names:
+                import aioredis
+                try:
+                    # Delete all cache keys matching any of the domains
+                    pipe = redis.pipeline()
+                    for domain in domain_names:
+                        # FastMCP cache keys match like: mcp-server__tools/call::scrape_url:{"url":"https://domain.com/..."}
+                        # We'll use SCAN to find matching keys
+                        async for key in aioredis.scan_iter(redis, match=f"*scrape_url*{domain}*", count=100):
+                            await redis.delete(key)
+                        async for key in aioredis.scan_iter(redis, match=f"*scrape_url*{domain.replace('.', '.')}*", count=100):
+                            await redis.delete(key)
+                    await pipe.execute()
+                    logger.info(f"Cleared FastMCP cache for {len(domain_names)} domains")
+                except Exception as e:
+                    logger.warning(f"Failed to clear FastMCP cache: {e}")
+
+            logger.info(f"Cleared blacklist for {count} domains")
             return count
 
     async def clean(self) -> int:
