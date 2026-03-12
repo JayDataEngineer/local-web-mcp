@@ -53,8 +53,7 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 {
   "mcpServers": {
     "dockerhost-mcp": {
-      "url": "http://100.102.244.97:8000/mcp",
-      "transport": "sse"
+      "url": "http://100.102.244.97:8000/mcp"
     }
   }
 }
