@@ -149,10 +149,7 @@ class ContentCleaner:
         # Remove duplicate spaces within lines
         text = re.sub(r' +', ' ', text)
 
-        # Compress multiple blank lines to max one
-        text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
-
-        # Strip leading/trailing whitespace from each line
+        # Strip leading/trailing whitespace from each line and remove empty lines
         lines = [line.strip() for line in text.split('\n') if line.strip()]
 
         return '\n\n'.join(lines)

@@ -1,0 +1,3 @@
+## 2024-03-20 - String processing in UnifiedSearchService and ContentCleaner
+**Learning:** Python 3.7+ dictionaries maintain insertion order, making dict comprehensions/updates significantly faster for preserving uniqueness of objects compared to using a set and appending to a list. Also, chaining `str.replace` before `str.split` is faster than joining and replacing after, avoiding double spaces. Lastly, moving sets to module-level constants prevents recreation in loop/functions like `flash_rerank`.
+**Action:** Use dicts over sets + lists when preserving insertion order of unique objects. Chain string replacements before splitting if spaces are involved to prevent regex or multiple spacing issues. Pull constant allocations like frozensets out of frequent functions.

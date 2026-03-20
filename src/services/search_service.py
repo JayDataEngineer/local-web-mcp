@@ -77,6 +77,16 @@ class UnifiedSearchService:
             search_time_ms=round(search_time_ms, 2)
         )
 
+    # Shared sets for flash_rerank to prevent repeated allocation
+    _STOP_WORDS = frozenset({"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+                 "of", "with", "by", "from", "as", "is", "was", "are", "be", "been",
+                 "this", "that", "these", "those", "it", "its", "what", "which", "who"})
+    _AUTHORITATIVE_DOMAINS = frozenset({
+        "wikipedia.org", "github.com", "stackoverflow.com", "docs.",
+        "developer.mozilla.org", "python.org", "nodejs.org",
+        "mozilla.org", "w3.org", "mdn."
+    })
+
     def _flash_rerank(self, query: str, results: list[SearchResult]) -> list[SearchResult]:
         """Flash re-ranking based on query term overlap and position
 
@@ -94,11 +104,8 @@ class UnifiedSearchService:
         """
         # Extract query terms (lowercase, remove common words)
         query_lower = query.lower()
-        stop_words = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-                     "of", "with", "by", "from", "as", "is", "was", "are", "be", "been",
-                     "this", "that", "these", "those", "it", "its", "what", "which", "who"}
 
-        query_terms = [w for w in re.findall(r"\b\w+\b", query_lower) if w not in stop_words and len(w) > 1]
+        query_terms = [w for w in re.findall(r"\b\w+\b", query_lower) if w not in self._STOP_WORDS and len(w) > 1]
         if not query_terms:
             return results
 
@@ -108,29 +115,29 @@ class UnifiedSearchService:
             title_lower = result.title.lower()
             snippet_lower = result.snippet.lower()
 
+            # Cache lengths to avoid repeated calculations
+            title_len = len(title_lower)
+            snippet_len = len(snippet_lower)
+
             # Score based on term matches in title (highest weight)
             for term in query_terms:
                 # Exact phrase in title - big bonus
-                if term in title_lower:
-                    # Position bonus: earlier in title = higher score
+                if title_len > 0:
                     first_pos = title_lower.find(term)
-                    position_bonus = 1.0 - (first_pos / len(title_lower)) * 0.5
-                    score += 2.0 * position_bonus
+                    if first_pos != -1:
+                        position_bonus = 1.0 - (first_pos / title_len) * 0.5
+                        score += 2.0 * position_bonus
 
                 # Exact phrase in snippet
-                if term in snippet_lower:
+                if snippet_len > 0:
                     first_pos = snippet_lower.find(term)
-                    position_bonus = 1.0 - (first_pos / len(snippet_lower)) * 0.3
-                    score += 1.0 * position_bonus
+                    if first_pos != -1:
+                        position_bonus = 1.0 - (first_pos / snippet_len) * 0.3
+                        score += 1.0 * position_bonus
 
             # Domain authority bonus (common reputable sources)
             domain = result.domain.lower()
-            authoritative_domains = {
-                "wikipedia.org", "github.com", "stackoverflow.com", "docs.",
-                "developer.mozilla.org", "python.org", "nodejs.org",
-                "mozilla.org", "w3.org", "mdn."
-            }
-            if any(d in domain for d in authoritative_domains):
+            if any(d in domain for d in self._AUTHORITATIVE_DOMAINS):
                 score += 0.5
 
             scored_results.append((result, score))
@@ -196,27 +203,20 @@ class UnifiedSearchService:
 
     def _deduplicate(self, results: list[SearchResult]) -> list[SearchResult]:
         """Remove duplicate results by URL"""
-        seen = set()
-        unique = []
+        # Python 3.7+ dictionaries maintain insertion order
+        seen = {}
         for r in results:
             if r.url not in seen:
-                seen.add(r.url)
-                unique.append(r)
-        return unique
+                seen[r.url] = r
+        return list(seen.values())
 
     def _clean_text(self, text: str) -> str:
         """Clean and normalize text"""
         if not text:
             return ""
 
-        # Remove extra whitespace
-        text = " ".join(text.split())
-
-        # Remove common artifacts
-        for artifact in ["\u2026", "\u00a0", "\u200b"]:
-            text = text.replace(artifact, " ")
-
-        return text.strip()
+        # Remove common artifacts and extra whitespace
+        return " ".join(text.replace("\u2026", " ").replace("\u00a0", " ").replace("\u200b", " ").split())
 
     async def close(self):
         await self.client.aclose()

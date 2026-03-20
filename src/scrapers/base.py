@@ -702,10 +702,7 @@ async def scrape_with_fallback(
 def normalize_reddit_url(url: str) -> str:
     """Normalize Reddit URL to JSON API format"""
     if ".json" not in url:
-        clean_url = url.replace("old.reddit.com", "www.reddit.com")
-        clean_url = clean_url.replace("new.reddit.com", "www.reddit.com")
-        clean_url = clean_url.rstrip("/")
-        return f"{clean_url}.json"
+        return f"{url.replace('old.reddit.com', 'www.reddit.com').replace('new.reddit.com', 'www.reddit.com').rstrip('/')}.json"
     return url
 
 
