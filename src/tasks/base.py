@@ -136,4 +136,5 @@ class BaseTask(Task, AsyncMixin, DatabaseMixin, CleanerMixin, CacheMixin):
 
     def after_return(self, *args, **kwargs):
         """Cleanup after task completes - keep resources alive for reuse"""
-        pass
+        logger.debug(f"Task {self.name} return hook called.")
+        super().after_return(*args, **kwargs)
