@@ -321,9 +321,7 @@ class Database:
                         # FastMCP cache keys match like: mcp-server__tools/call::scrape_url:{"url":"https://domain.com/..."}
                         # We'll use SCAN to find matching keys
                         async for key in aioredis.scan_iter(redis, match=f"*scrape_url*{domain}*", count=100):
-                            await redis.delete(key)
-                        async for key in aioredis.scan_iter(redis, match=f"*scrape_url*{domain.replace('.', '.')}*", count=100):
-                            await redis.delete(key)
+                            pipe.delete(key)
                     await pipe.execute()
                     logger.info(f"Cleared FastMCP cache for {len(domain_names)} domains")
                 except Exception as e:
