@@ -30,7 +30,7 @@ services:
       - HTTPPROXY=on
     ports:
       # Expose HTTP proxy on localhost only (for host-level tools)
-      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:8328:8888"
     restart: unless-stopped
     deploy:
       resources:
@@ -65,7 +65,7 @@ services:
     build: .
     container_name: mcp-server
     ports:
-      - "8000:8000"  # Expose to all interfaces for tailnet access
+      - "8327:8000"  # Expose to all interfaces for tailnet access
     networks:
       - mcp_net
     volumes:
@@ -158,7 +158,7 @@ services:
     networks:
       - mcp_net
     ports:
-      - "127.0.0.1:5555:5555"
+      - "127.0.0.1:5921:5555"
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0

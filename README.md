@@ -104,7 +104,7 @@ Once Tailscale is running, your MCP server is accessible at:
 https://<TAILNET_MACHINE_NAME>.<TAILNET_DOMAIN>/sse
 ```
 
-Example: `https://mcp-server.tailb1e597.ts.net/sse`
+Example: `https://gtek.tailb1e597.ts.net/sse`
 
 ---
 
@@ -113,7 +113,7 @@ Example: `https://mcp-server.tailb1e597.ts.net/sse`
 ### Claude Code (CLI)
 
 ```bash
-claude mcp add --transport http research https://mcp-server.tailb1e597.ts.net/sse
+claude mcp add --transport http research https://gtek.tailb1e597.ts.net/sse
 ```
 
 Replace the URL with your actual Tailscale MagicDNS URL.
@@ -130,7 +130,7 @@ Add to your Claude Desktop config:
   "mcpServers": {
     "research": {
       "transport": "sse",
-      "url": "https://mcp-server.tailb1e597.ts.net/sse",
+      "url": "https://gtek.tailb1e597.ts.net/sse",
       "timeout": 120000
     }
   }
@@ -140,6 +140,11 @@ Add to your Claude Desktop config:
 ### Other MCP Clients
 
 Any MCP-compatible client can connect via SSE transport to your Tailscale HTTPS URL.
+
+**Local access** (same machine only):
+- MCP server: `http://localhost:8327/sse`
+- Flower dashboard: `http://localhost:5921`
+- VPN proxy: `http://localhost:8328`
 
 ---
 

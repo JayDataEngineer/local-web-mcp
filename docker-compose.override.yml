@@ -21,8 +21,8 @@ services:
           if tailscale status >/dev/null 2>&1; then
             echo 'Host Tailscale is ready!'
             tailscale status
-            echo 'Setting up Funnel to forward to localhost:8000...'
-            tailscale funnel --https=443 --bg --yes http://127.0.0.1:8000
+            echo 'Setting up Funnel to forward to localhost:8327...'
+            tailscale funnel --https=443 --bg --yes http://127.0.0.1:8327
             echo 'Funnel is running!'
             tailscale funnel status
             tail -f /dev/null
