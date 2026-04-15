@@ -32,7 +32,7 @@ class UnifiedSearchService:
     async def search(
         self,
         query: str,
-        pages: int = 10,
+        pages: int = 3,
         exclude_blacklist: bool = True,
         top_k: int | None = None,
         rerank: bool = False,
@@ -158,7 +158,7 @@ class UnifiedSearchService:
         return [r for r, s in scored_results]
 
     async def _fetch_results(self, query: str, pages: int, blacklisted: set[str], time_filter: str | None = None) -> list[SearchResult]:
-        """Fetch results from SearXNG with pagination
+        """Fetch results from SearXNG with parallel pagination
 
         Args:
             query: Search query
@@ -166,9 +166,9 @@ class UnifiedSearchService:
             blacklisted: Set of blacklisted domains to filter out
             time_filter: Optional time range filter (day, week, month, year)
         """
-        results = []
+        import asyncio
 
-        for page in range(1, pages + 1):
+        async def _fetch_page(page: int) -> list[SearchResult]:
             params = {
                 "q": query,
                 "format": "json",
@@ -176,7 +176,6 @@ class UnifiedSearchService:
                 "engines": ",".join(DEFAULT_SEARCH_ENGINES)
             }
 
-            # Add time filter if specified (SearXNG built-in feature)
             if time_filter:
                 params["time_range"] = time_filter
 
@@ -185,6 +184,7 @@ class UnifiedSearchService:
                 response.raise_for_status()
                 data = response.json()
 
+                page_results = []
                 for item in data.get("results", []):
                     url = item.get("url", "")
                     domain = urlparse(url).netloc or urlparse(url).path
@@ -192,18 +192,24 @@ class UnifiedSearchService:
                     if domain in blacklisted:
                         continue
 
-                    results.append(SearchResult(
+                    page_results.append(SearchResult(
                         title=self._clean_text(item.get("title", "")),
                         url=url,
                         snippet=self._clean_text(item.get("content", "")),
                         domain=domain
                     ))
+                return page_results
 
             except httpx.HTTPStatusError as e:
                 logger.warning(f"SearXNG HTTP error on page {page}: {e.response.status_code}")
             except Exception as e:
                 logger.warning(f"SearXNG error on page {page}: {e}")
+            return []
 
+        page_results = await asyncio.gather(*[_fetch_page(p) for p in range(1, pages + 1)])
+        results = []
+        for batch in page_results:
+            results.extend(batch)
         return results
 
     def _deduplicate(self, results: list[SearchResult]) -> list[SearchResult]:

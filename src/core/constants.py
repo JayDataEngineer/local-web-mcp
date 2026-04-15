@@ -25,8 +25,8 @@ RATE_LIMIT_TTL = 300
 BLACKLIST_FAILURE_THRESHOLD = 3
 
 # Retry counts before switching methods
-CRAWL4AI_RETRY_COUNT = 3
-SELENIUM_RETRY_COUNT = 3
+CRAWL4AI_RETRY_COUNT = 2
+SELENIUM_RETRY_COUNT = 2
 
 # Crawl4AI browser concurrency limit (async MCP server)
 # Reduced due to "Target crashed" errors under load - Playwright browsers are memory heavy
@@ -34,7 +34,7 @@ CRAWL4AI_MAX_CONCURRENT = 5
 
 # Search configuration
 DEFAULT_SEARCH_ENGINES = ["brave", "bing", "duckduckgo", "ask"]
-MAX_SEARCH_PAGES = 10
+MAX_SEARCH_PAGES = 5
 
 # Cache TTL (seconds)
 CACHE_TTL_SCRAPE = 86400

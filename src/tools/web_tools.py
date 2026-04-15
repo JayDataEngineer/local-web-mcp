@@ -105,16 +105,16 @@ async def search_web(
         max_length=500
     )],
     pages: Annotated[int, Field(
-        description="Number of search result pages to fetch (1-10)",
+        description="Number of search result pages to fetch (1-5)",
         ge=1,
-        le=10
-    )] = 10,
+        le=5
+    )] = 3,
     exclude_blacklist: Annotated[bool, Field(
         description="Exclude blacklisted domains from results"
     )] = True,
     top_k: Annotated[int | None, Field(
         description="Maximum number of results to return (None = all results)"
-    )] = None,
+    )] = 20,
     rerank: Annotated[bool, Field(
         description="Apply flash re-ranking based on query relevance"
     )] = True,
