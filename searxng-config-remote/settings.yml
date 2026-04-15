@@ -43,3 +43,6 @@ engines:
 outgoing:
   request_timeout: 15.0
   max_request_timeout: 20.0
+  proxies:
+    all://:
+      - http://gluetun:8888
