@@ -3,7 +3,7 @@
 Uses SQLAlchemy 2.0 async ORM instead of raw SQL.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 from loguru import logger
 import os
@@ -126,7 +126,7 @@ class Database:
                 new_domain = Domain(
                     domain=domain,
                     preferred_method=method,
-                    last_success=datetime.now(),
+                    last_success=datetime.now(timezone.utc),
                     failure_count=0,
                     is_blacklisted=False
                 )
@@ -171,6 +171,11 @@ class Database:
     async def record_failure(self, domain: str, method: str = "unknown") -> dict:
         """Record a scrape failure and blacklist if threshold exceeded
 
+        Failures older than 24 hours are reset before counting — only failures
+        within a 24-hour window count toward the blacklist threshold. This
+        prevents VPN blips and temporary outages from permanently blacklisting
+        a domain.
+
         Args:
             domain: The domain that failed
             method: The method that was attempted
@@ -187,17 +192,29 @@ class Database:
             db_domain = result.scalar_one_or_none()
 
             if db_domain:
+                # Reset failure count if last failure was >24h ago (stale failures don't count)
+                now = datetime.now(timezone.utc)
+                if db_domain.last_failure:
+                    hours_since = (now - db_domain.last_failure).total_seconds() / 3600
+                    if hours_since > 24:
+                        if db_domain.failure_count > 0:
+                            logger.info(
+                                f"Resetting stale failure count for {domain} "
+                                f"({db_domain.failure_count} failures, last was {hours_since:.0f}h ago)"
+                            )
+                        db_domain.failure_count = 0
+
                 # Increment failure count
                 new_count = db_domain.failure_count + 1
                 db_domain.failure_count = new_count
-                db_domain.last_failure = datetime.now()
+                db_domain.last_failure = now
 
                 # Only blacklist if threshold exceeded
                 if new_count >= BLACKLIST_FAILURE_THRESHOLD:
                     db_domain.is_blacklisted = True
                     await session.commit()
                     logger.warning(
-                        f"Blacklisted {domain} after {new_count} failures "
+                        f"Blacklisted {domain} after {new_count} failures within 24h "
                         f"(threshold: {BLACKLIST_FAILURE_THRESHOLD})"
                     )
                     return {"blacklisted": True, "failure_count": new_count}
@@ -211,7 +228,7 @@ class Database:
                     domain=domain,
                     preferred_method="crawl4ai",
                     failure_count=1,
-                    last_failure=datetime.now(),
+                    last_failure=datetime.now(timezone.utc),
                     is_blacklisted=False,
                 )
                 session.add(new_domain)
@@ -247,11 +264,11 @@ class Database:
             domains = result.scalars().all()
             return [d.to_dict() for d in domains]
 
-    async def cleanup_old_blacklisted(self, days_old: int = 7) -> int:
-        """Remove blacklisted domains older than specified days"""
+    async def cleanup_old_blacklisted(self, days_old: int = 2) -> int:
+        """Remove blacklisted domains older than specified days (default 2)"""
         from datetime import timedelta
 
-        cutoff_date = datetime.now() - timedelta(days=days_old)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_old)
 
         async with self._get_session() as session:
             # Find blacklisted domains with updated_at older than cutoff
@@ -439,12 +456,12 @@ class Database:
 
             if db_domain:
                 db_domain.failure_count = count
-                db_domain.last_failure = datetime.now()
+                db_domain.last_failure = datetime.now(timezone.utc)
             else:
                 new_domain = Domain(
                     domain=domain,
                     failure_count=count,
-                    last_failure=datetime.now()
+                    last_failure=datetime.now(timezone.utc)
                 )
                 session.add(new_domain)
 
@@ -503,7 +520,7 @@ class Database:
         """
         from datetime import timedelta
 
-        cutoff_time = datetime.now() - timedelta(hours=hours)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
 
         async with self._get_session() as session:
             # Total scrapes
@@ -640,7 +657,7 @@ class Database:
         """
         from datetime import timedelta
 
-        cutoff_date = datetime.now() - timedelta(days=days)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
 
         async with self._get_session() as session:
             result = await session.execute(

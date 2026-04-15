@@ -43,7 +43,7 @@ def _check_searxng() -> dict:
 
 
 @app.task(bind=True, base=BaseTask, name="tasks.periodic.cleanup_blacklist")
-def cleanup_blacklist(self, days_old: int = 7) -> dict:
+def cleanup_blacklist(self, days_old: int = 2) -> dict:
     """
     Periodic task to clean up old blacklisted domains
 
