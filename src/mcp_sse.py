@@ -230,6 +230,7 @@ from .tools.web_tools import search_web, scrape_url, scrape_structured, list_sch
 from .tools.crawl_tools import map_domain, crawl_site
 from .tools.docs_tools import docs_list_sources, docs_fetch_docs
 from .tools.admin_tools import get_domains, clean_database, clear_blacklist
+from .tools.proxy_tools import proxy_status, proxy_test, proxy_rotate
 
 # Register all tools with FastMCP
 mcp.add_tool(search_web)
@@ -243,6 +244,9 @@ mcp.add_tool(docs_fetch_docs)
 mcp.add_tool(get_domains)
 mcp.add_tool(clear_blacklist)
 mcp.add_tool(clean_database)
+mcp.add_tool(proxy_status)
+mcp.add_tool(proxy_test)
+mcp.add_tool(proxy_rotate)
 
 
 # ========== SERVER ENTRY POINT ==========
@@ -259,5 +263,15 @@ if __name__ == "__main__":
     logger.info(f"Caching: enabled (search: {SEARCH_CACHE_TTL}s, scrape: {SCRAPE_CACHE_TTL}s)")
     logger.info(f"Web tools: search_web, scrape_url, map_domain, crawl_site, scrape_structured, list_schemas, get_domains, clear_blacklist, clean_database")
     logger.info(f"Docs tools: docs_list_sources, docs_fetch_docs")
+    logger.info(f"Proxy tools: proxy_status, proxy_test, proxy_rotate")
+
+    # Log proxy status
+    from .utils.proxy import get_proxy_manager
+    proxy_mgr = get_proxy_manager()
+    proxy_stats = proxy_mgr.get_stats()
+    if proxy_stats["enabled"]:
+        logger.info(f"Proxy: ENABLED ({proxy_stats['proxy_count']} proxy(ies), rotation={proxy_stats['rotation']})")
+    else:
+        logger.info("Proxy: disabled")
 
     mcp.run(transport="http", host=host, port=port)

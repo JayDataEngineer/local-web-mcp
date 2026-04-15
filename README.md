@@ -15,6 +15,8 @@ FastMCP-based research server with MCP (Model Context Protocol) support for unif
 - **Documentation Tools**: Native FastMCP tools for fetching any URL as clean Markdown
 - **Redis Caching**: ResponseCachingMiddleware for search, scrape, and docs
 - **Error Handling**: Input validation, ToolError exceptions, masked internal errors
+- **VPN/Proxy Gateway**: Gluetun container routes all scraping through WireGuard VPN tunnel
+- **Proxy Management**: Runtime tools for proxy status, testing, and rotation
 - **Caddy Reverse Proxy**: Professional deployment with automatic TLS
 
 ## Architecture
@@ -54,6 +56,19 @@ FastMCP-based research server with MCP (Model Context Protocol) support for unif
             │  Worker │   │  Beat    │   │  Flower  │
             │(Celery) │   │(schedule)│   │(monitor) │
             └──────────┘   └──────────┘   └──────────┘
+
+
+    External Traffic (scrape/search):
+    ┌──────────┐   HTTP    ┌──────────┐  WireGuard  ┌───────────┐
+    │  MCP /   │ ────────► │ Gluetun  │ ──────────► │  Internet │
+    │  Celery  │ :8888     │  (VPN)   │             │           │
+    └──────────┘           └──────────┘             └───────────┘
+
+    Internal Traffic (postgres, redis, searxng):
+    ┌──────────┐  direct   ┌──────────────┐
+    │  MCP /   │ ────────► │  Internal    │
+    │  Celery  │           │  services    │
+    └──────────┘           └──────────────┘
 ```
 
 ## Quick Start
@@ -149,6 +164,14 @@ Any MCP-compatible client can connect via SSE transport to your Tailscale HTTPS 
 |------|-------------|
 | `docs_list_sources` | List available documentation libraries |
 | `docs_fetch_docs` | Fetch documentation from any URL (cached, cleaned to Markdown) |
+
+### Proxy Management
+
+| Tool | Description |
+|------|-------------|
+| `proxy_status` | Show current proxy configuration and rotation stats |
+| `proxy_test` | Test proxy connectivity and report exit IP vs real IP |
+| `proxy_rotate` | Manually rotate to the next proxy in the rotation list |
 
 ---
 
@@ -289,7 +312,85 @@ for page in crawl_result["pages"]:
 | mcp-postgres | Domain tracking database | 512MB limit |
 | mcp-redis | Cache + rate limiting | 256MB limit |
 | mcp-searxng | Multi-engine search | 512MB limit |
+| mcp-vpn | Gluetun VPN gateway (HTTP proxy) | 256MB limit |
 | mcp-ts | Tailscale sidecar (host network) | - |
+
+---
+
+## VPN / Proxy Setup
+
+All search and scrape traffic routes through a WireGuard VPN tunnel via a [Gluetun](https://github.com/qdm12/gluetun) container. Your real IP is never exposed to scraped sites.
+
+**How it works:**
+
+1. Gluetun connects to a VPN server via WireGuard
+2. It exposes an HTTP proxy at `gluetun:8888` on the Docker network
+3. The MCP server and Celery worker route all external HTTP traffic through this proxy
+4. Internal services (Postgres, Redis, SearXNG) connect directly — they're excluded from the proxy
+
+If the VPN tunnel drops, Gluetun's firewall blocks all outbound traffic. There is no fallback to your real IP.
+
+### Setup
+
+**1. Get WireGuard credentials from your VPN provider**
+
+Most providers (Proton VPN, Mullvad, Surfshark, NordVPN, etc.) let you download a WireGuard `.conf` file. It looks like:
+
+```ini
+[Interface]
+PrivateKey = ABC123abc...
+Address = 10.2.0.2/32
+DNS = 10.2.0.1
+
+[Peer]
+PublicKey = XYZ789xyz...
+Endpoint = 1.2.3.4:51820
+AllowedIPs = 0.0.0.0/0
+```
+
+**2. Add the values to your `.env`**
+
+```bash
+WIREGUARD_PRIVATE_KEY=ABC123abc...       # from [Interface] PrivateKey
+WIREGUARD_ADDRESS=10.2.0.2/32            # from [Interface] Address
+WIREGUARD_PUBLIC_KEY=XYZ789xyz...        # from [Peer] PublicKey
+WIREGUARD_ENDPOINT_IP=1.2.3.4             # from [Peer] Endpoint IP
+WIREGUARD_ENDPOINT_PORT=51820             # from [Peer] Endpoint port
+```
+
+**3. Start the stack**
+
+```bash
+docker compose up -d
+```
+
+**4. Verify it's working**
+
+Use the `proxy_test` MCP tool — it reports your proxy exit IP and your real IP. If `ip_different: true`, your traffic is going through the VPN.
+
+### Proxy Rotation
+
+To rotate across multiple proxies (e.g., different VPN servers or a proxy pool), set `MCP_PROXY_URLS` instead:
+
+```bash
+# Comma-separated list — rotates round-robin by default
+MCP_PROXY_URLS=http://gluetun:8888,http://proxy2:8080,socks5://proxy3:1080
+```
+
+Use `proxy_rotate` to manually advance to the next proxy, or `proxy_status` to see current rotation state.
+
+### Advanced Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_PROXY_URL` | `http://gluetun:8888` | Single proxy URL (HTTP or SOCKS5) |
+| `MCP_PROXY_URLS` | _(empty)_ | Comma-separated list for rotation (overrides `MCP_PROXY_URL`) |
+| `MCP_PROXY_ROTATION` | `round-robin` | Rotation strategy: `round-robin` or `random` |
+| `MCP_PROXY_EXCLUDE` | `searxng,postgres,redis,localhost,127.0.0.1` | Hostnames to bypass proxy |
+
+### Disabling the VPN
+
+To run without a proxy, comment out the `gluetun` service in `docker-compose.yml` and set `MCP_PROXY_URL=` (empty) in your `.env`. All traffic will go direct.
 
 ---
 
@@ -319,6 +420,13 @@ CELERY_RESULT_BACKEND=redis://redis:6379/0
 # API
 MCP_PORT=8000
 ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
+
+# VPN (WireGuard credentials from your VPN provider)
+WIREGUARD_PRIVATE_KEY=<from your WireGuard config>
+WIREGUARD_ADDRESS=10.2.0.2/32
+WIREGUARD_PUBLIC_KEY=<from your WireGuard config>
+WIREGUARD_ENDPOINT_IP=<server_ip>
+WIREGUARD_ENDPOINT_PORT=51820
 
 # Caching (seconds)
 SEARCH_CACHE_TTL=300
@@ -412,4 +520,5 @@ Add more in `docs_config.yaml`. Domains linked in llms.txt files are automatical
 - **Crawl4AI** - Fast JS-enabled scraping, URL seeding, and deep crawling
 - **SeleniumBase** - Stealth scraping fallback
 - **ContentCleaner** - Multi-strategy HTML→Markdown conversion
+- **Gluetun** - VPN gateway with WireGuard and HTTP proxy
 - **Tailscale** - VPN + MagicDNS

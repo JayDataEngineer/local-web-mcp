@@ -324,8 +324,10 @@ async def docs_fetch_docs(
     # Fetch the documentation
     import httpx
 
+    from ..utils.proxy import create_proxied_client
+
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with create_proxied_client(timeout=30.0, target_url=url) as client:
             if ctx:
                 await ctx.debug(f"Sending HTTP GET to {url}")
 

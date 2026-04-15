@@ -396,10 +396,12 @@ async def scrape_reddit(url: str, cleaner=None) -> dict:
     try:
         import httpx
 
+        from ..utils.proxy import create_proxied_client
+
         json_url = normalize_reddit_url(url)
         logger.info(f"Fetching Reddit JSON: {json_url}")
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with create_proxied_client(timeout=30.0, target_url=json_url) as client:
             response = await client.get(json_url, headers=DEFAULT_HEADERS)
             response.raise_for_status()
             data = response.json()
@@ -429,10 +431,12 @@ async def scrape_pdf(url: str, cleaner=None) -> dict:
     import fitz  # PyMuPDF
     import io
 
+    from ..utils.proxy import create_proxied_client
+
     try:
         logger.info(f"Downloading PDF: {url}")
 
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        async with create_proxied_client(timeout=60.0, target_url=url) as client:
             response = await client.get(url, headers=DEFAULT_HEADERS)
             response.raise_for_status()
 

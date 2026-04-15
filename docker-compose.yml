@@ -3,6 +3,47 @@ networks:
     driver: bridge
 
 services:
+  # Gluetun VPN - Routes all scraping/search through Proton VPN
+  # Exposes HTTP proxy at gluetun:8888 on the Docker network.
+  # To disable: comment out this service and remove MCP_PROXY_URL from mcp-server/celery-worker.
+  # To set up: download a WireGuard config from https://account.protonvpn.com/downloads
+  #   and fill in the WIREGUARD_* values in your .env file.
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: mcp-vpn
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    networks:
+      - mcp_net
+    environment:
+      - VPN_SERVICE_PROVIDER=custom
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESS:-10.2.0.2/32}
+      - WIREGUARD_PUBLIC_KEY=${WIREGUARD_PUBLIC_KEY}
+      - WIREGUARD_ENDPOINT_IP=${WIREGUARD_ENDPOINT_IP}
+      - WIREGUARD_ENDPOINT_PORT=${WIREGUARD_ENDPOINT_PORT:-51820}
+      - FIREWALL_VPN_INPUT_PORTS=
+      - FIREWALL_INPUT_PORTS=
+      - HTTPPROXY=on
+    ports:
+      # Expose HTTP proxy on localhost only (for host-level tools)
+      - "127.0.0.1:8888:8888"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null --timeout=5 http://localhost:8888 2>/dev/null || nc -z localhost 8888"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   # Caddy Reverse Proxy
   caddy:
     image: caddy:2
@@ -41,11 +82,20 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - MCP_PORT=${MCP_PORT:-8000}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - MCP_PROXY_URL=${MCP_PROXY_URL:-http://gluetun:8888}
+      - MCP_PROXY_URLS=${MCP_PROXY_URLS:-}
+      - MCP_PROXY_ROTATION=${MCP_PROXY_ROTATION:-round-robin}
+      - MCP_PROXY_EXCLUDE=${MCP_PROXY_EXCLUDE:-searxng,postgres,redis,localhost,127.0.0.1}
     command: python -m src.mcp_sse
     depends_on:
-      - postgres
-      - searxng
-      - redis
+      gluetun:
+        condition: service_started
+      postgres:
+        condition: service_started
+      searxng:
+        condition: service_started
+      redis:
+        condition: service_started
     restart: unless-stopped
     deploy:
       resources:
@@ -74,10 +124,18 @@ services:
       - SEARXNG_URL=http://searxng:8080
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - MCP_PROXY_URL=${MCP_PROXY_URL:-http://gluetun:8888}
+      - MCP_PROXY_URLS=${MCP_PROXY_URLS:-}
+      - MCP_PROXY_ROTATION=${MCP_PROXY_ROTATION:-round-robin}
+      - MCP_PROXY_EXCLUDE=${MCP_PROXY_EXCLUDE:-searxng,postgres,redis,localhost,127.0.0.1}
     command: celery -A src.celery_app worker --loglevel=info --concurrency=10
     depends_on:
-      - postgres
-      - redis
+      gluetun:
+        condition: service_started
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
     restart: unless-stopped
     deploy:
       resources:

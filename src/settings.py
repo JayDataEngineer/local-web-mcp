@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     # Blacklist Threshold
     blacklist_failure_threshold: int = 3
 
+    # Proxy Configuration
+    proxy_url: Optional[str] = None  # Single proxy, e.g. socks5://127.0.0.1:1080
+    proxy_urls: Optional[str] = None  # Comma-separated list for rotation
+    proxy_rotation: str = "round-robin"  # "round-robin" or "random"
+    proxy_exclude: str = "searxng,postgres,redis,localhost,127.0.0.1"  # Hostnames to bypass
+
 
 # Global settings instance
 _settings: Settings | None = None

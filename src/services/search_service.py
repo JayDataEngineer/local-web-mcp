@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from ..models.unified import SearchResult, CombinedSearchResponse
 from ..core.constants import DEFAULT_SEARCH_ENGINES, HTTP_REQUEST_TIMEOUT
+from ..utils.proxy import create_proxied_client
 
 
 class UnifiedSearchService:
@@ -14,7 +15,11 @@ class UnifiedSearchService:
 
     def __init__(self, searxng_url: str = "http://searxng:8080"):
         self.searxng_url = searxng_url
-        self.client = httpx.AsyncClient(timeout=HTTP_REQUEST_TIMEOUT, follow_redirects=True)
+        # SearXNG is an internal service — pass target_url so exclusion kicks in
+        self.client = create_proxied_client(
+            timeout=HTTP_REQUEST_TIMEOUT,
+            target_url=searxng_url,
+        )
         self._db = None
 
     async def _get_db(self):
