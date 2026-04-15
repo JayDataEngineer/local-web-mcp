@@ -117,6 +117,7 @@ WORKDIR /app
 # Copy virtual environment and source from builder
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
+COPY profiling/ /app/profiling/
 # Copy Playwright browser cache
 COPY --from=builder /root/.cache /root/.cache
 
