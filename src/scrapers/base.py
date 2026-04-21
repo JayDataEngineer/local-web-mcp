@@ -37,6 +37,16 @@ BLOCK_PATTERNS = {
 }
 
 
+def _get_browser_proxy_url(target_url: str = None) -> str | None:
+    """Get the proxy URL for browser-based scrapers (Crawl4AI, Selenium).
+
+    Returns None if proxy is disabled or target is excluded (internal services).
+    """
+    from ..utils.proxy import get_proxy_manager
+    manager = get_proxy_manager()
+    return manager.get_proxy_url(target_url)
+
+
 def is_security_checkpoint(title: str, content: str, url: str = None) -> bool:
     """Detect if the page is a security checkpoint/challenge page
 
@@ -261,13 +271,19 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only
 
         # Limit concurrent Crawl4AI browsers to prevent memory exhaustion
         async with _crawl4ai_semaphore:
-            browser_config = BrowserConfig(
+            browser_kwargs = dict(
                 headless=True,
                 enable_stealth=True,
                 user_agent_mode="random",
                 text_mode=text_only,
-                verbose=False
+                verbose=False,
             )
+            # Route through VPN proxy (never hit the internet bare)
+            proxy_url = _get_browser_proxy_url(url)
+            if proxy_url:
+                browser_kwargs["proxy"] = proxy_url
+
+            browser_config = BrowserConfig(**browser_kwargs)
 
             run_config = CrawlerRunConfig(
                 word_count_threshold=CRAWL4AI_WORD_COUNT_THRESHOLD,
@@ -403,8 +419,14 @@ async def scrape_selenium(url: str, cleaner, css_selector: str = None) -> dict:
         loop = asyncio.get_event_loop()
 
         def _scrape_sync():
+            # Route through VPN proxy (never hit the internet bare)
+            driver_kwargs = dict(uc=True, headless=True)
+            proxy_url = _get_browser_proxy_url(url)
+            if proxy_url:
+                driver_kwargs["chromium_arg"] = f"--proxy-server={proxy_url}"
+
             # Use undetected Chrome mode with Playwright's Chromium
-            with DriverContext(uc=True, headless=True) as driver:
+            with DriverContext(**driver_kwargs) as driver:
                 driver.open(url)
                 driver.sleep(SELENIUM_PAGE_LOAD_WAIT_SECONDS)
                 html_content = driver.get_page_source()
@@ -806,7 +828,7 @@ def format_reddit_content(url: str, data: dict) -> tuple[str, str]:
         content += f"**Link:** https://www.reddit.com{permalink}\n\n"
 
         # Top comments
-        from ..constants import REDDIT_MAX_COMMENTS
+        from ..core.constants import REDDIT_MAX_COMMENTS
         comments = comments_data.get("children", [])
         if comments:
             content += "### Top Comments\n\n"
@@ -833,7 +855,7 @@ def format_reddit_content(url: str, data: dict) -> tuple[str, str]:
         title = "Reddit Posts"
         content += "### Posts\n\n"
 
-        from ..constants import REDDIT_MAX_POSTS
+        from ..core.constants import REDDIT_MAX_POSTS
         for post in posts[:REDDIT_MAX_POSTS]:
             post_data = post.get("data", {})
             if not post_data:
