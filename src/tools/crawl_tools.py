@@ -1,8 +1,8 @@
 """Crawling Tools
 
 Tools for discovering URLs and deep crawling websites.
-- map_domain: Discover URLs from sitemaps/Common Crawl
-- crawl_site: Deep crawl with BFS strategy
+- map: Discover URLs from sitemaps/Common Crawl
+- crawl: Deep crawl with BFS or Best-First strategy
 """
 
 from typing import Annotated, Literal, Optional
@@ -90,7 +90,7 @@ def _is_url_blacklisted(url: str) -> bool:
         return True
 
 
-async def map_domain(
+async def map(
     domain: Annotated[str, Field(
         description="Domain to map (e.g., 'example.com' or 'https://example.com')",
         min_length=3
@@ -192,7 +192,7 @@ async def map_domain(
     }
 
 
-async def crawl_site(
+async def crawl(
     url: Annotated[str, Field(
         description="Starting URL to crawl"
     )],

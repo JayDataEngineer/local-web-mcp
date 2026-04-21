@@ -9,6 +9,7 @@ from ..core.constants import (
     CRAWL4AI_WORD_COUNT_THRESHOLD,
     SELENIUM_PAGE_LOAD_WAIT_SECONDS,
     MIN_CONTENT_LENGTH,
+    MAX_CONTENT_LENGTH,
     DEFAULT_HEADERS,
     CRAWL4AI_RETRY_COUNT,
     SELENIUM_RETRY_COUNT,
@@ -115,6 +116,56 @@ def is_low_quality_response(content: str, url: str = None) -> str | None:
     return None
 
 
+def postprocess_markdown(content: str) -> str:
+    """Clean up markdown output from Crawl4AI / ContentCleaner.
+
+    Removes common noise patterns that slip through extraction:
+    - Video fallback text ("Your browser does not support the video tag")
+    - Excessive whitespace from removed elements
+    - Caps content to MAX_CONTENT_LENGTH to protect downstream consumers
+    """
+    if not content:
+        return content
+
+    # Remove video tag fallback text
+    content = re.sub(
+        r"\n*Your browser does not support the video tag\.?\n*",
+        "\n",
+        content,
+        flags=re.I,
+    )
+
+    # Remove "Skip to content" / "Skip to main content" links
+    content = re.sub(
+        r"\[Skip to (?:main )?content\]\([^)]+\)\n?",
+        "",
+        content,
+        flags=re.I,
+    )
+
+    # Collapse 3+ consecutive blank lines into 2
+    content = re.sub(r"\n{3,}", "\n\n", content)
+
+    # Strip trailing whitespace per line
+    content = "\n".join(line.rstrip() for line in content.split("\n"))
+
+    # Cap content length
+    if len(content) > MAX_CONTENT_LENGTH:
+        logger.info(
+            f"Content truncated: {len(content)} -> {MAX_CONTENT_LENGTH} chars"
+        )
+        # Truncate at last paragraph break within limit for clean cut
+        truncated = content[:MAX_CONTENT_LENGTH]
+        last_break = truncated.rfind("\n\n")
+        if last_break > MAX_CONTENT_LENGTH * 0.7:
+            content = truncated[:last_break]
+        else:
+            content = truncated
+        content += f"\n\n... (content truncated at {MAX_CONTENT_LENGTH} chars, total was longer)"
+
+    return content.strip()
+
+
 def detect_blocking(page_content: str, status_code: int = None) -> str | None:
     """Detect if we've been blocked by the website
 
@@ -203,28 +254,34 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only
     """
     try:
         from crawl4ai import AsyncWebCrawler, BrowserConfig
+        from crawl4ai.async_configs import CrawlerRunConfig
+        from crawl4ai.cache_context import CacheMode
+        from crawl4ai.content_filter_strategy import PruningContentFilter
+        from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
 
         # Limit concurrent Crawl4AI browsers to prevent memory exhaustion
         async with _crawl4ai_semaphore:
-            # Build browser config with stealth mode (always enabled for anti-detection)
             browser_config = BrowserConfig(
                 headless=True,
-                enable_stealth=True,  # Anti-fingerprinting
-                user_agent_mode="random",  # Random user agent
-                text_mode=text_only,  # Disable images if requested
+                enable_stealth=True,
+                user_agent_mode="random",
+                text_mode=text_only,
                 verbose=False
             )
 
+            run_config = CrawlerRunConfig(
+                word_count_threshold=CRAWL4AI_WORD_COUNT_THRESHOLD,
+                cache_mode=CacheMode.BYPASS,
+                process_iframes=False,
+                mean_delay=0.3,
+                delay_before_return_html=0.2,
+                markdown_generator=DefaultMarkdownGenerator(
+                    content_filter=PruningContentFilter(),
+                ),
+            )
+
             async with AsyncWebCrawler(config=browser_config, verbose=False) as crawler:
-                result = await crawler.arun(
-                    url=url,
-                    word_count_threshold=CRAWL4AI_WORD_COUNT_THRESHOLD,
-                    bypass_cache=True,
-                    process_iframes=False,
-                    # Anti-detection: add delay
-                    mean_delay=0.3,
-                    delay_before_return_html=0.2,
-                )
+                result = await crawler.arun(url=url, config=run_config)
 
                 if result.success:
                     domain = extract_domain(url)
@@ -251,29 +308,33 @@ async def scrape_crawl4ai(url: str, cleaner, css_selector: str = None, text_only
                         logger.warning(f"HTML checkpoint detected for {url}: {title}")
                         return build_error_response(url, "crawl4ai", "Blocked: Security checkpoint - bot verification required")
 
-                    # Now do expensive content cleaning
-                    clean_markdown = cleaner.clean(html_content, url, css_selector)
+                    # Crawl4AI produces two markdown outputs:
+                    # - fit_markdown: pruned by PruningContentFilter (removes cookie
+                    #   banners, nav menus, sidebars, low-value nodes)
+                    # - raw_markdown: full page after basic tag stripping
+                    md_result = result.markdown
 
-                    # Quick quality check before content length checks
-                    quality_error = is_low_quality_response(clean_markdown, url)
-                    if quality_error:
-                        logger.warning(f"Low quality response for {url}: {quality_error}")
-                        # Don't fail immediately - might be a valid short page
-                        # But mark for potential retry with different method
+                    clean_markdown = ""
+                    has_fit = hasattr(md_result, 'fit_markdown') and bool(md_result.fit_markdown)
+                    has_raw = hasattr(md_result, 'raw_markdown') and bool(md_result.raw_markdown)
+                    logger.debug(f"Crawl4AI markdown: fit={has_fit} ({len(md_result.fit_markdown) if has_fit else 0} chars), raw={has_raw} ({len(md_result.raw_markdown) if has_raw else 0} chars), type={type(md_result).__name__}")
 
-                    # Check minimum content length
+                    if has_fit:
+                        clean_markdown = md_result.fit_markdown
+                    elif has_raw:
+                        clean_markdown = md_result.raw_markdown
+                    elif isinstance(md_result, str):
+                        clean_markdown = md_result
+
+                    # Fallback to ContentCleaner for css_selector or empty results
                     if len(clean_markdown) < MIN_CONTENT_LENGTH:
-                        # Try Crawl4AI's built-in markdown as fallback
-                        crawl4ai_md = result.markdown
-                        # Handle both string (older) and MarkdownGenerationResult (newer)
-                        if hasattr(crawl4ai_md, 'raw_markdown'):
-                            crawl4ai_md = crawl4ai_md.raw_markdown
+                        clean_markdown = cleaner.clean(html_content, url, css_selector)
 
-                        if len(crawl4ai_md) >= MIN_CONTENT_LENGTH:
-                            logger.info(f"Using Crawl4AI's markdown fallback for {url} ({len(crawl4ai_md)} chars)")
-                            clean_markdown = crawl4ai_md
-                        else:
-                            return build_content_too_short_response(url, "crawl4ai", len(clean_markdown))
+                    if len(clean_markdown) < MIN_CONTENT_LENGTH:
+                        return build_content_too_short_response(url, "crawl4ai", len(clean_markdown))
+
+                    # Post-process: remove noise, cap length
+                    clean_markdown = postprocess_markdown(clean_markdown)
 
                     # Final checkpoint check on cleaned content (catch anything missed)
                     if is_security_checkpoint(title, clean_markdown, url) is True:
@@ -367,6 +428,9 @@ async def scrape_selenium(url: str, cleaner, css_selector: str = None) -> dict:
         # Check minimum content length
         if len(clean_markdown) < MIN_CONTENT_LENGTH:
             return build_content_too_short_response(url, "selenium", len(clean_markdown))
+
+        # Post-process: remove noise, cap length
+        clean_markdown = postprocess_markdown(clean_markdown)
 
         # Final checkpoint check on cleaned content
         if is_security_checkpoint(title, clean_markdown, url) is True:

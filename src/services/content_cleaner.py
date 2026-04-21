@@ -160,12 +160,9 @@ class ContentCleaner:
         """
         WATERFALL STRATEGY: Universal scraper for ALL page types
 
-        This handles:
-        - Articles & blogs (like Trafilatura)
-        - SaaS landing pages (Anthropic, Stripe)
-        - Corporate sites
-        - React/SPA dashboards
-        - E-commerce pages
+        Note: For the primary scraping path, Crawl4AI's PruningContentFilter
+        is used (see scrape_crawl4ai). This waterfall serves as a fallback
+        for cases where Crawl4AI's markdown is insufficient.
 
         Process:
         1. Aggressive junk tag removal (script, style, nav, footer, form, etc.)

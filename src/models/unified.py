@@ -20,6 +20,7 @@ class SearchResult(BaseModel):
     url: str
     snippet: str
     domain: str
+    score: float = 0.0  # SearXNG native engine consensus score
 
 
 class CombinedSearchResponse(BaseModel):

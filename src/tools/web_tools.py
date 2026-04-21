@@ -1,16 +1,19 @@
 """Web Research Tools
 
-Tools for searching the web, scraping URLs, and extracting structured data.
-- search_web: Search using multiple search engines
-- scrape_url: Scrape URL with automatic method selection
-- scrape_structured: Extract structured JSON data using pre-built schemas
+Tools for searching, scraping, and researching the web.
+- research: Search + scrape top results in one call (recommended)
+- search: Search using multiple search engines
+- scrape: Scrape a URL and extract clean markdown
+- extract: Extract structured JSON data using pre-built schemas
 - list_schemas: List available extraction schemas
 """
 
+import asyncio
 from typing import Annotated, Literal, Optional
 
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
+from loguru import logger
 from pydantic import Field
 
 
@@ -98,7 +101,106 @@ def _is_url_blacklisted(url: str) -> bool:
         return True
 
 
-async def search_web(
+async def research(
+    query: Annotated[str, Field(
+        description="Research query — searches the web and scrapes the top results",
+        min_length=1,
+        max_length=500
+    )],
+    max_results: Annotated[int, Field(
+        description="Number of search results to scrape (1-5)",
+        ge=1,
+        le=5
+    )] = 3,
+    depth: Annotated[Literal["quick", "deep"], Field(
+        description="quick=1 search page (~10 results), deep=2 pages (~20 results)"
+    )] = "quick",
+    ctx: Context | None = None
+) -> dict:
+    """Search the web and scrape the top results in one call.
+
+    This is the fastest way to research a topic. It searches multiple
+    engines, then scrapes the top results concurrently so you get
+    actual page content — not just snippets.
+
+    Returns results with title, url, snippet, and page content (capped at ~5K chars per result).
+    Use 'scrape' on a specific URL if you need the full page content.
+
+    Args:
+        query: What to search for
+        max_results: How many results to scrape (default 3)
+        depth: "quick" for 1 page of results, "deep" for 2 pages
+
+    Returns:
+        Dictionary with query and list of results, each containing
+        title, url, snippet, and scraped content.
+    """
+    if ctx:
+        await ctx.info(f"Researching: {query}")
+
+    search_svc = ctx.lifespan_context.get("search_service")
+    scrape_svc = ctx.lifespan_context.get("scrape_service")
+    if not search_svc or not scrape_svc:
+        raise ToolError("Search or scrape service not available")
+
+    # Step 1: Search
+    pages = 1 if depth == "quick" else 2
+    search_result = await search_svc.search(
+        query=query,
+        pages=pages,
+        exclude_blacklist=True,
+        top_k=max_results,
+        rerank=True,
+    )
+
+    if not search_result.results:
+        return {"query": query, "results": []}
+
+    # Step 2: Scrape top results in parallel
+    from ..models.unified import ScrapeRequest
+
+    async def _scrape_one(result_item) -> dict:
+        try:
+            req = ScrapeRequest(url=result_item.url, text_only=True)
+            resp = await scrape_svc.scrape(req)
+            content = resp.content if resp.success else None
+            # Cap individual results at ~10K chars to protect context windows.
+            # PruningContentFilter already removes noise; this catches edge cases.
+            if content and len(content) > 10000:
+                content = content[:10000] + f"\n\n... ({len(resp.content)} chars total, use scrape for full page)"
+            return {
+                "title": result_item.title,
+                "url": result_item.url,
+                "snippet": result_item.snippet,
+                "content": content,
+                "error": resp.error if not resp.success else None,
+            }
+        except Exception as e:
+            logger.debug(f"research: failed to scrape {result_item.url}: {e}")
+            return {
+                "title": result_item.title,
+                "url": result_item.url,
+                "snippet": result_item.snippet,
+                "content": None,
+                "error": str(e)[:200],
+            }
+
+    scraped = await asyncio.gather(
+        *[_scrape_one(r) for r in search_result.results[:max_results]]
+    )
+
+    # Filter to results that actually got content
+    successful = [r for r in scraped if r["content"]]
+
+    if ctx:
+        await ctx.info(
+            f"Scraped {len(successful)}/{len(scraped)} results"
+        )
+
+    return {"query": query, "results": list(scraped)}
+
+
+async def search(
     query: Annotated[str, Field(
         description="Search query string",
         min_length=1,
@@ -108,13 +210,13 @@ async def search_web(
         description="Number of search result pages to fetch (1-5)",
         ge=1,
         le=5
-    )] = 3,
+    )] = 1,
     exclude_blacklist: Annotated[bool, Field(
         description="Exclude blacklisted domains from results"
     )] = True,
     top_k: Annotated[int | None, Field(
         description="Maximum number of results to return (None = all results)"
-    )] = 20,
+    )] = 5,
     rerank: Annotated[bool, Field(
         description="Apply flash re-ranking based on query relevance"
     )] = True,
@@ -125,25 +227,23 @@ async def search_web(
 ) -> dict:
     """Search the web using multiple search engines
 
+    Returns titles, URLs, and short snippets. Use the 'research' tool
+    instead if you want full page content along with results.
+
     Args:
         query: Search query string (1-500 characters)
-        pages: Number of search result pages to fetch, 1-10 (default: 10)
+        pages: Number of search result pages to fetch (default: 1)
         exclude_blacklist: Exclude blacklisted domains from results
-        top_k: Maximum number of results to return (default: all results)
+        top_k: Maximum number of results to return (default: 5)
         rerank: Apply flash re-ranking to prioritize relevant results
         time_filter: Filter by time - day (24h), week (7d), month (30d), year (365d)
 
     Returns:
-        Dictionary with query, total_results, and list of results
-
-    Note:
-        Results are cached for {SEARCH_CACHE_TTL}s. Cached results will return
-        instantly without re-querying search engines.
+        Dictionary with query and list of results (title, url, snippet)
     """
     if ctx:
         await ctx.info(f"Searching for: {query}")
 
-    # Get services from lifespan context with safe access
     search_svc = ctx.lifespan_context.get("search_service")
     if not search_svc:
         raise ToolError("Search service not available")
@@ -159,19 +259,10 @@ async def search_web(
 
     if ctx:
         await ctx.info(f"Found {result.total_results} results")
-        if rerank:
-            await ctx.info("Results re-ranked by query relevance")
-        if time_filter:
-            await ctx.info(f"Filtered by time: {time_filter}")
 
     return {
         "query": query,
         "total_results": result.total_results,
-        "pages_scraped": result.pages_scraped,
-        "engines": result.engines,
-        "search_time_ms": result.search_time_ms,
-        "reranked": rerank,
-        "time_filter": time_filter,
         "results": [
             {"title": r.title, "url": r.url, "snippet": r.snippet}
             for r in result.results
@@ -179,7 +270,7 @@ async def search_web(
     }
 
 
-async def scrape_url(
+async def scrape(
     url: Annotated[str, Field(description="URL to scrape")],
     method: Annotated[Literal["crawl4ai", "selenium", "pdf"] | None, Field(
         description="Force specific scraping method"
@@ -204,11 +295,7 @@ async def scrape_url(
         text_only: Disable images for faster loading (Crawl4AI only)
 
     Returns:
-        Dictionary with success status, title, content, and metadata
-
-    Note:
-        Results are cached for {SCRAPE_CACHE_TTL}s. Cached scrapes return
-        instantly without re-downloading the page.
+        Dictionary with url, title, content (markdown), success, and error
 
     Security:
         Internal and private IPs are blocked (localhost, 127.0.0.1, 10.*,
@@ -233,7 +320,6 @@ async def scrape_url(
 
     from ..models.unified import ScrapeRequest, ScrapingMethod
 
-    # Get services from lifespan context with safe access
     scrape_svc = ctx.lifespan_context.get("scrape_service")
     if not scrape_svc:
         raise ToolError("Scrape service not available")
@@ -253,11 +339,9 @@ async def scrape_url(
 
         response = {
             "url": result.url,
-            "success": result.success,
-            "method_used": result.method_used.value if result.method_used else None,
             "title": result.title,
             "content": result.content,
-            "word_count": result.metadata.get("word_count", 0) if result.metadata else 0,
+            "success": result.success,
         }
 
         if not result.success and result.error:
@@ -267,11 +351,9 @@ async def scrape_url(
 
         return response
     except Exception as e:
-        # Catch ANY exception to prevent TaskGroup errors from propagating
         import traceback
-        from loguru import logger
 
-        logger.error(f"Unexpected error in scrape_url for {url}: {e}")
+        logger.error(f"Unexpected error in scrape for {url}: {e}")
         logger.debug(f"Traceback: {traceback.format_exc()}")
 
         error_msg = str(e) if len(str(e)) < 200 else "Internal error during scraping"
@@ -282,15 +364,13 @@ async def scrape_url(
         return {
             "url": url,
             "success": False,
-            "method_used": None,
             "title": None,
             "content": "",
-            "word_count": 0,
             "error": error_msg
         }
 
 
-async def scrape_structured(
+async def extract(
     url: Annotated[str, Field(description="URL to scrape with structured extraction")],
     schema_type: Annotated[Literal["ecommerce", "news", "jobs", "blog", "social", "products"], Field(
         description="Pre-built schema type for extraction"
@@ -303,11 +383,11 @@ async def scrape_structured(
     )] = True,
     ctx: Context | None = None
 ) -> dict:
-    """Scrape a URL and extract structured data using schema-based extraction
+    """Extract structured data from a web page using pre-built schemas
 
-    This tool uses pre-built CSS extraction schemas to extract structured
-    JSON data from web pages WITHOUT using LLMs. Much faster and cheaper
-    than LLM-based extraction.
+    Uses CSS extraction schemas to extract structured JSON data from web
+    pages WITHOUT using LLMs. Much faster and cheaper than LLM-based
+    extraction.
 
     SCHEMA TYPES:
     - ecommerce: Products (name, price, rating, availability, image, url)
@@ -317,21 +397,14 @@ async def scrape_structured(
     - social: Social posts (username, content, timestamp, likes, shares)
     - products: Product catalog multi-item extraction
 
-    WORKFLOW:
-    1. Choose the appropriate schema_type for your target page
-    2. Optional: Provide custom_selector to target specific container
-    3. Tool returns structured JSON array with extracted items
-
-    VS scrape_url:
-    - scrape_url: Returns full page content as markdown
-    - scrape_structured: Returns structured JSON data for specific elements
+    Args:
+        url: URL to extract data from
+        schema_type: Pre-built schema type for extraction
+        custom_selector: Custom CSS selector to override the base selector
+        bypass_cache: Bypass cache and fetch fresh data
 
     Returns:
         Dictionary with extracted items as JSON array
-
-    Note:
-        Results are NOT cached by default (bypass_cache=True) since
-        structured data changes frequently.
     """
     from ..services.crawl_service import StructuredScrapeConfig
 
@@ -349,7 +422,7 @@ async def scrape_structured(
         )
 
     if ctx:
-        await ctx.info(f"Structured scraping: {url} (schema={schema_type})")
+        await ctx.info(f"Extracting {schema_type} data from: {url}")
 
     crawl_svc = ctx.lifespan_context.get("crawl_service")
     if not crawl_svc:
@@ -384,7 +457,7 @@ async def list_schemas(ctx: Context | None = None) -> dict:
     """List all available structured extraction schemas
 
     Returns information about pre-built schemas available for
-    scrape_structured, including field counts and descriptions.
+    the extract tool, including field counts and descriptions.
 
     Returns:
         Dictionary with list of available schemas
@@ -396,5 +469,4 @@ async def list_schemas(ctx: Context | None = None) -> dict:
     return {
         "total": len(schemas),
         "schemas": schemas,
-        "usage": "Use scrape_structured with schema_type parameter",
     }

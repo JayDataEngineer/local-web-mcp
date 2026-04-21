@@ -43,10 +43,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy dependency files
 COPY pyproject.toml ./
 
-# Create virtual environment and install dependencies
+# Create virtual environment and install dependencies (including dev for pytest)
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv /app/.venv && \
-    uv sync --no-dev
+    uv sync
 
 # Install Playwright Chromium
 RUN .venv/bin/playwright install --with-deps chromium
@@ -118,6 +118,8 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
 COPY profiling/ /app/profiling/
+COPY tests/ /app/tests/
+COPY pyproject.toml /app/pyproject.toml
 # Copy Playwright browser cache
 COPY --from=builder /root/.cache /root/.cache
 

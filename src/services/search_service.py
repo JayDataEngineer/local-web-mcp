@@ -86,74 +86,163 @@ class UnifiedSearchService:
     _STOP_WORDS = frozenset({"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
                  "of", "with", "by", "from", "as", "is", "was", "are", "be", "been",
                  "this", "that", "these", "those", "it", "its", "what", "which", "who"})
-    _AUTHORITATIVE_DOMAINS = frozenset({
-        "wikipedia.org", "github.com", "stackoverflow.com", "docs.",
+
+    # +40: Official documentation / high-trust structural patterns
+    _AUTHORITATIVE_PATTERNS = (
+        "docs.", "developer.", ".edu", ".gov",
         "developer.mozilla.org", "python.org", "nodejs.org",
-        "mozilla.org", "w3.org", "mdn."
+        "pkg.go.dev", "docs.rs", "crates.io", "npmjs.com",
+        "pypi.org", "docs.docker.com", "kubernetes.io",
+        "cloud.google.com", "aws.amazon.com", "learn.microsoft.com",
+        "react.dev", "nextjs.org", "vuejs.org", "angular.io",
+        "tailwindcss.com", "fastapi.tiangolo.com", "flask.palletsprojects.com",
+        "django.readthedocs.io", "readthedocs.io",
+        "postgresql.org", "sqlite.org", "mongodb.com/docs",
+    )
+
+    # +20: Community references (trusted but not official docs)
+    _COMMUNITY_PATTERNS = (
+        "stackoverflow.com", "github.com", "wikipedia.org",
+        "realpython.com", "digitalocean.com/community",
+        "freecodecamp.org",
+    )
+
+    # -80: Known SEO slop farms (heavy penalty to overcome high SearXNG ranks)
+    _SLOP_DOMAINS = frozenset({
+        "geeksforgeeks.org", "w3schools.com", "tutorialspoint.com",
+        "javatpoint.com", "programiz.com", "educba.com",
+        "studytonight.com", "beginnersbook.com", "journaldev.com",
+        "baeldung.com", "howtodoinjava.com",
+        "quora.com", "answers.com", "stackshare.io",
+        "ask.com", "chegg.com", "consumersearch.com",
+        "questionsanswered.net",
+        "zhihu.com",  # Chinese-language Q&A, useless for English queries
     })
 
-    def _flash_rerank(self, query: str, results: list[SearchResult]) -> list[SearchResult]:
-        """Flash re-ranking based on query term overlap and position
+    # -25: Mixed-quality content mills
+    _CONTENT_MILL_DOMAINS = frozenset({
+        "medium.com", "dev.to", "hackernoon.com",
+        "towardsdatascience.com",  # Cookie walls, low content yield
+    })
 
-        Prioritizes results where:
-        - Query terms appear in title (higher weight)
-        - Query terms appear early in title/snippet
-        - More query terms matched
+    # -30: SEO slug patterns in URL paths
+    _SEO_URL_PATTERNS = re.compile(
+        r"/(?:best|top|ultimate|complete|step.by.step|tutorial|guide|explained|vs|comparison|review|updated|2024|2025|2026)",
+        re.I,
+    )
 
-        Args:
-            query: Original search query
-            results: List of search results to re-rank
+    # -20: Excessive dashes in domain (keyword stuffing)
+    _SEO_DOMAIN_PATTERN = re.compile(r"(?:[a-z]-){4,}", re.I)
 
-        Returns:
-            Re-ranked list of search results
+    def _quality_score(self, url: str, domain: str) -> float:
+        """Score a URL/domain for content quality based on patterns.
+
+        Returns a modifier to add to the base score:
+        +40 for authoritative sources (official docs, .edu, .gov)
+        +20 for community references (SO, GitHub, Wikipedia)
+        -80 for known SEO slop farms
+        -25 for mixed-quality content mills
+        -30 for SEO-optimized URL slugs
+        -20 for keyword-stuffed domains
         """
-        # Extract query terms (lowercase, remove common words)
-        query_lower = query.lower()
+        score = 0.0
+        domain_lower = domain.lower()
 
-        query_terms = [w for w in re.findall(r"\b\w+\b", query_lower) if w not in self._STOP_WORDS and len(w) > 1]
-        if not query_terms:
-            return results
+        # +40: Authoritative patterns (official docs)
+        for pattern in self._AUTHORITATIVE_PATTERNS:
+            if pattern in domain_lower:
+                score += 40
+                break
+
+        # +20: Community references (only if not already matched authoritative)
+        if score == 0.0:
+            for pattern in self._COMMUNITY_PATTERNS:
+                if pattern in domain_lower:
+                    score += 20
+                    break
+
+        # -80: Known slop farms
+        for slop in self._SLOP_DOMAINS:
+            if slop in domain_lower or domain_lower.endswith(slop):
+                score -= 80
+                break
+
+        # -25: Content mills (mixed quality, often SEO-heavy)
+        for mill in self._CONTENT_MILL_DOMAINS:
+            if mill in domain_lower:
+                score -= 25
+                break
+
+        # -30: SEO-optimized URL patterns
+        if self._SEO_URL_PATTERNS.search(url):
+            score -= 30
+
+        # -20: Excessive dashes in domain
+        if self._SEO_DOMAIN_PATTERN.search(domain_lower):
+            score -= 20
+
+        return score
+
+    def _flash_rerank(self, query: str, results: list[SearchResult]) -> list[SearchResult]:
+        """Re-rank search results using position + quality + relevance scoring.
+
+        Scoring:
+        1. Base: SearXNG rank position (rank 1=100, rank 2=95, ...)
+        2. Plus: SearXNG native engine consensus score (scaled x10)
+        3. Plus: Quality modifier (+40 official docs, +20 community, -80 slop, etc.)
+        4. Tiebreaker: Keyword relevance (title match x2, snippet match x1)
+
+        Example:
+          docs.docker.com (rank 5): base 80 + native*10 + 40 (authoritative) = ~130
+          astconsulting.in (rank 1): base 100 + native*10 - 30 (SEO URL) = ~70
+          → docs.docker.com jumps to #1
+        """
+        # Extract query terms for keyword relevance tiebreaker
+        query_lower = query.lower()
+        query_terms = [w for w in re.findall(r"\b\w+\b", query_lower)
+                       if w not in self._STOP_WORDS and len(w) > 1]
 
         scored_results = []
-        for result in results:
-            score = 0.0
-            title_lower = result.title.lower()
-            snippet_lower = result.snippet.lower()
+        for rank, result in enumerate(results):
+            # 1. Position base score: rank 1=100, rank 2=95, etc.
+            position_score = max(0, 100 - rank * 5)
 
-            # Cache lengths to avoid repeated calculations
-            title_len = len(title_lower)
-            snippet_len = len(snippet_lower)
+            # 2. SearXNG native engine consensus (scaled to comparable range)
+            native_score = result.score * 10
 
-            # Score based on term matches in title (highest weight)
-            for term in query_terms:
-                # Exact phrase in title - big bonus
-                if title_len > 0:
-                    first_pos = title_lower.find(term)
-                    if first_pos != -1:
-                        position_bonus = 1.0 - (first_pos / title_len) * 0.5
-                        score += 2.0 * position_bonus
+            # 3. Quality modifier from URL/domain patterns
+            quality = self._quality_score(result.url, result.domain)
 
-                # Exact phrase in snippet
-                if snippet_len > 0:
-                    first_pos = snippet_lower.find(term)
-                    if first_pos != -1:
-                        position_bonus = 1.0 - (first_pos / snippet_len) * 0.3
-                        score += 1.0 * position_bonus
+            # 4. Keyword relevance tiebreaker
+            relevance = 0.0
+            if query_terms:
+                title_lower = result.title.lower()
+                snippet_lower = result.snippet.lower()
+                title_len = len(title_lower)
+                snippet_len = len(snippet_lower)
 
-            # Domain authority bonus (common reputable sources)
-            domain = result.domain.lower()
-            if any(d in domain for d in self._AUTHORITATIVE_DOMAINS):
-                score += 0.5
+                for term in query_terms:
+                    if title_len > 0:
+                        pos = title_lower.find(term)
+                        if pos != -1:
+                            relevance += 2.0 * (1.0 - (pos / title_len) * 0.5)
+                    if snippet_len > 0:
+                        pos = snippet_lower.find(term)
+                        if pos != -1:
+                            relevance += 1.0 * (1.0 - (pos / snippet_len) * 0.3)
 
-            scored_results.append((result, score))
+            final_score = position_score + native_score + quality + relevance
+            scored_results.append((result, final_score))
 
-        # Sort by score descending
+        # Sort by final score descending
         scored_results.sort(key=lambda x: x[1], reverse=True)
 
-        # Log re-ranking changes
         if len(scored_results) > 1:
-            top_score = scored_results[0][1]
-            logger.info(f"Flash re-rank: top score={top_score:.2f}, results={len(scored_results)}")
+            top = scored_results[0]
+            logger.info(
+                f"Re-rank: top={top[0].domain} ({top[1]:.1f}), "
+                f"results={len(scored_results)}"
+            )
 
         return [r for r, s in scored_results]
 
@@ -196,7 +285,8 @@ class UnifiedSearchService:
                         title=self._clean_text(item.get("title", "")),
                         url=url,
                         snippet=self._clean_text(item.get("content", "")),
-                        domain=domain
+                        domain=domain,
+                        score=float(item.get("score", 0)),
                     ))
                 return page_results
 

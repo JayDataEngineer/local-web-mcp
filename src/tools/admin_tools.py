@@ -1,10 +1,10 @@
 """Admin Tools
 
 Administrative tools for managing the MCP server.
-- get_domains: List tracked domains with preferred methods
+- domains: List tracked domains with preferred methods
+- stats: View scrape statistics and metrics
+- reset: Clear all domain tracking data
 - clear_blacklist: Clear all blacklisted domains (unblock them)
-- get_scrape_stats: View scrape statistics and metrics
-- clean_database: Clear all domain tracking data
 
 Note: Domain tracking uses PostgreSQL database shared with Celery workers.
 """
@@ -16,7 +16,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 
-async def get_domains(ctx: Context | None = None) -> dict:
+async def domains(ctx: Context | None = None) -> dict:
     """List all tracked domains with their preferred scraping methods
 
     Returns:
@@ -33,18 +33,18 @@ async def get_domains(ctx: Context | None = None) -> dict:
     if not db:
         raise ToolError("Database service not available")
 
-    domains = await db.get_all_domains()
+    domain_list = await db.get_all_domains()
 
     if ctx:
-        await ctx.debug(f"Retrieved {len(domains)} domains")
+        await ctx.debug(f"Retrieved {len(domain_list)} domains")
 
     return {
-        "total": len(domains),
-        "domains": domains
+        "total": len(domain_list),
+        "domains": domain_list
     }
 
 
-async def get_scrape_stats(
+async def stats(
     hours: Annotated[int, Field(
         description="Time period in hours (default: 24)",
         ge=1,
@@ -77,19 +77,19 @@ async def get_scrape_stats(
     if not db:
         raise ToolError("Database service not available")
 
-    stats = await db.get_scrape_stats(hours=hours)
+    scrape_stats = await db.get_scrape_stats(hours=hours)
 
     if ctx:
         await ctx.info(
-            f"Stats: {stats['total_scrapes']} scrapes, "
-            f"{stats['success_rate']}% success rate, "
-            f"avg {stats['avg_duration_ms']}ms"
+            f"Stats: {scrape_stats['total_scrapes']} scrapes, "
+            f"{scrape_stats['success_rate']}% success rate, "
+            f"avg {scrape_stats['avg_duration_ms']}ms"
         )
 
-    return stats
+    return scrape_stats
 
 
-async def clean_database(ctx: Context | None = None) -> dict:
+async def reset(ctx: Context | None = None) -> dict:
     """Clear all domain tracking data
 
     This resets all learned scraping methods and blacklist entries.
@@ -132,7 +132,7 @@ async def clear_blacklist(ctx: Context | None = None) -> dict:
         Dictionary with status and count of unblacklisted domains
 
     Note:
-        This is a safer alternative to clean_database which removes
+        This is a safer alternative to reset which removes
         all learned data. clear_blacklist only resets the blacklist
         while keeping learned scraping methods.
     """

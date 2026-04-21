@@ -330,19 +330,16 @@ class Database:
 
             # Clear FastMCP response cache for affected domains
             if redis and domain_names:
-                import aioredis
                 try:
                     # Delete all cache keys matching any of the domains
-                    pipe = redis.pipeline()
                     for domain in domain_names:
-                        # FastMCP cache keys match like: mcp-server__tools/call::scrape_url:{"url":"https://domain.com/..."}
-                        # We'll use SCAN to find matching keys
-                        async for key in aioredis.scan_iter(redis, match=f"*scrape_url*{domain}*", count=100):
-                            await redis.delete(key)
-                        async for key in aioredis.scan_iter(redis, match=f"*scrape_url*{domain.replace('.', '.')}*", count=100):
-                            await redis.delete(key)
-                    await pipe.execute()
-                    logger.info(f"Cleared FastMCP cache for {len(domain_names)} domains")
+                        # FastMCP cache keys are hashed, so we can't easily match by domain.
+                        # Just flush the entire tools/call cache namespace.
+                        break
+                    # Flush all tool call caches to ensure fresh results
+                    async for key in redis.scan_iter(match="mcp-server__tools/call::*", count=100):
+                        await redis.delete(key)
+                    logger.info(f"Cleared FastMCP tool cache for {len(domain_names)} domains")
                 except Exception as e:
                     logger.warning(f"Failed to clear FastMCP cache: {e}")
 

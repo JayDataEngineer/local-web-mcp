@@ -1,22 +1,26 @@
-"""MCP Server with Streamable HTTP transport for Tailscale/HTTP access
-
-This allows Claude Desktop or other MCP clients to connect over HTTP
-instead of stdio. Perfect for remote access via Tailscale.
+"""MCP Server with Streamable HTTP transport
 
 Web Research Tools:
-- search_web: Search using multiple search engines
-- scrape_url: Scrape URL with automatic method selection
-- map_domain: Discover URLs from sitemaps/Common Crawl
-- crawl_site: Deep crawl with BFS strategy
-- scrape_structured: Extract structured JSON data using pre-built schemas (NEW)
-- list_schemas: List available extraction schemas (NEW)
-- get_domains: List tracked domains with preferred methods
-- clear_blacklist: Clear all blacklisted domains (unblock them)
-- clean_database: Clear all domain tracking data
+- research: Search + scrape top results in one call (recommended)
+- search: Search using multiple search engines
+- scrape: Scrape a URL and extract clean markdown
+- extract: Extract structured JSON data using pre-built schemas
+- list_schemas: List available extraction schemas
+- map: Discover URLs from sitemaps/Common Crawl
+- crawl: Deep crawl with BFS or Best-First strategy
 
-Documentation (via mcpdoc, namespaced as "docs_"):
-- docs_list_doc_sources: List available documentation libraries
+Admin Tools:
+- domains: List tracked domains with preferred methods
+- stats: View scrape statistics and metrics
+- reset: Clear all domain tracking data
+- clear_blacklist: Clear all blacklisted domains
+
+Documentation:
+- docs_list_sources: List available documentation libraries
 - docs_fetch_docs: Fetch documentation from llms.txt sources
+
+Proxy:
+- proxy_status, proxy_test, proxy_rotate
 """
 
 from __future__ import annotations
@@ -132,10 +136,13 @@ except Exception as e:
 mcp = FastMCP(
     name="mcp-research-server",
     instructions=(
-        "Provides web research tools: search_web, scrape_url, map_domain, crawl_site, scrape_structured. "
-        "Use search_web to find information, scrape_url for single pages, "
-        "map_domain to discover URLs from sitemaps, crawl_site for deep crawling, "
-        "and scrape_structured for schema-based JSON extraction. "
+        "Provides web research tools. "
+        "Use 'research' to search and read top results in one call (recommended for most queries). "
+        "Use 'search' for lightweight result lists (titles/snippets only). "
+        "Use 'scrape' to read a single page. "
+        "Use 'extract' for structured JSON extraction from pages. "
+        "Use 'map' to discover URLs from sitemaps. "
+        "Use 'crawl' for deep site crawling. "
         "The server learns which scraping method works best for each domain."
     ),
     lifespan=service_lifespan,
@@ -151,7 +158,7 @@ mcp.add_middleware(ErrorHandlingMiddleware(
 
 # Add response caching middleware with Redis backend
 # Note: Streaming endpoints are automatically excluded by FastMCP
-# Note: Using explicit allowlist for tools - dynamic operations (map_domain, crawl_site)
+# Note: Using explicit allowlist for tools - dynamic operations (map, crawl)
 #       are excluded to ensure fresh data on each call
 if redis_store:
     try:
@@ -161,29 +168,30 @@ if redis_store:
                 "enabled": True,
                 "ttl": SCRAPE_CACHE_TTL,
                 "included_tools": [  # Explicit allowlist - cache only stable operations
-                    "search_web",
-                    "scrape_url",
-                    "scrape_structured",
+                    "research",
+                    "search",
+                    "scrape",
+                    "extract",
                     "docs_fetch_docs",
                     "docs_list_sources",
                     "list_schemas",
-                    "get_domains",
+                    "domains",
                     "clear_blacklist",
                 ],
                 # Excluded from caching (fresh results each call):
-                # - map_domain: Sitemaps change frequently, need fresh discovery
-                # - crawl_site: Dynamic link discovery, content changes
-                # - clean_database: Must always execute
+                # - map: Sitemaps change frequently, need fresh discovery
+                # - crawl: Dynamic link discovery, content changes
+                # - reset: Must always execute
             },
             list_tools_settings={"enabled": True, "ttl": SEARCH_CACHE_TTL},
         ))
         cached_tools = ", ".join([
-            "search_web", "scrape_url", "scrape_structured",
-            "docs_fetch_docs", "docs_list_sources", "list_schemas", "get_domains", "clear_blacklist"
+            "research", "search", "scrape", "extract",
+            "docs_fetch_docs", "docs_list_sources", "list_schemas", "domains", "clear_blacklist"
         ])
         logger.info(f"Response caching enabled ({SCRAPE_CACHE_TTL}s)")
         logger.info(f"Cached tools: {cached_tools}")
-        logger.info(f"Uncached: map_domain, crawl_site, clean_database (always fresh)")
+        logger.info(f"Uncached: map, crawl, reset (always fresh)")
     except Exception as e:
         logger.warning(f"Failed to add caching middleware: {e}")
 
@@ -226,24 +234,26 @@ mcp.http_app = http_app_with_middleware
 # ========== TOOL REGISTRATION ==========
 
 # Import tool functions from modular structure
-from .tools.web_tools import search_web, scrape_url, scrape_structured, list_schemas
-from .tools.crawl_tools import map_domain, crawl_site
+from .tools.web_tools import research, search, scrape, extract, list_schemas
+from .tools.crawl_tools import map, crawl
 from .tools.docs_tools import docs_list_sources, docs_fetch_docs
-from .tools.admin_tools import get_domains, clean_database, clear_blacklist
+from .tools.admin_tools import domains, stats, reset, clear_blacklist
 from .tools.proxy_tools import proxy_status, proxy_test, proxy_rotate
 
 # Register all tools with FastMCP
-mcp.add_tool(search_web)
-mcp.add_tool(scrape_url)
-mcp.add_tool(scrape_structured)
+mcp.add_tool(research)
+mcp.add_tool(search)
+mcp.add_tool(scrape)
+mcp.add_tool(extract)
 mcp.add_tool(list_schemas)
-mcp.add_tool(map_domain)
-mcp.add_tool(crawl_site)
+mcp.add_tool(map)
+mcp.add_tool(crawl)
 mcp.add_tool(docs_list_sources)
 mcp.add_tool(docs_fetch_docs)
-mcp.add_tool(get_domains)
+mcp.add_tool(domains)
+mcp.add_tool(stats)
+mcp.add_tool(reset)
 mcp.add_tool(clear_blacklist)
-mcp.add_tool(clean_database)
 mcp.add_tool(proxy_status)
 mcp.add_tool(proxy_test)
 mcp.add_tool(proxy_rotate)
@@ -261,7 +271,8 @@ if __name__ == "__main__":
     logger.info(f"Via MagicDNS+Caddy: https://<hostname>.<tailnet>.ts.net/mcp")
     logger.info(f"Session state: Redis @ {REDIS_HOST}:{REDIS_PORT}")
     logger.info(f"Caching: enabled (search: {SEARCH_CACHE_TTL}s, scrape: {SCRAPE_CACHE_TTL}s)")
-    logger.info(f"Web tools: search_web, scrape_url, map_domain, crawl_site, scrape_structured, list_schemas, get_domains, clear_blacklist, clean_database")
+    logger.info(f"Web tools: research, search, scrape, extract, list_schemas, map, crawl")
+    logger.info(f"Admin tools: domains, stats, reset, clear_blacklist")
     logger.info(f"Docs tools: docs_list_sources, docs_fetch_docs")
     logger.info(f"Proxy tools: proxy_status, proxy_test, proxy_rotate")
 

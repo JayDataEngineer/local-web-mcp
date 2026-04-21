@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "research": {
+      "type": "http",
+      "url": "http://localhost:8327/mcp"
+    }
+  }
+}

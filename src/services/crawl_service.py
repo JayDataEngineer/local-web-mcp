@@ -422,6 +422,7 @@ class MapCrawlService:
             CrawlResult with crawled pages
         """
         from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, BrowserConfig
+        from crawl4ai.cache_context import CacheMode
         from crawl4ai.deep_crawling import (
             BFSDeepCrawlStrategy,
             BestFirstCrawlingStrategy,
@@ -612,6 +613,7 @@ class MapCrawlService:
             StructuredResult with extracted items
         """
         from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, JsonCssExtractionStrategy
+        from crawl4ai.cache_context import CacheMode
         from .extraction_schemas import get_schema
 
         logger.info(f"Structured scraping: {url} (schema={config.schema_type})")
@@ -639,8 +641,7 @@ class MapCrawlService:
         # Build crawl config
         crawl_config = CrawlerRunConfig(
             extraction_strategy=extraction_strategy,
-            bypass_cache=config.bypass_cache,
-            cache_mode=None,  # Use default
+            cache_mode=CacheMode.BYPASS if config.bypass_cache else None,
         )
 
         try:
@@ -712,6 +713,7 @@ class MapCrawlService:
             List of StructuredResult objects
         """
         from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, JsonCssExtractionStrategy
+        from crawl4ai.cache_context import CacheMode
         from .extraction_schemas import get_schema
 
         logger.info(f"Structured scraping {len(urls)} URLs (schema={config.schema_type})")
@@ -739,7 +741,7 @@ class MapCrawlService:
         # Build crawl config
         crawl_config = CrawlerRunConfig(
             extraction_strategy=extraction_strategy,
-            bypass_cache=config.bypass_cache,
+            cache_mode=CacheMode.BYPASS if config.bypass_cache else None,
         )
 
         results = []
