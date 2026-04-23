@@ -234,7 +234,7 @@ mcp.http_app = http_app_with_middleware
 # ========== TOOL REGISTRATION ==========
 
 # Import tool functions from modular structure
-from .tools.web_tools import research, search, scrape, extract, list_schemas
+from .tools.web_tools import research, search, scrape, extract, list_schemas, process_html
 from .tools.crawl_tools import map, crawl
 from .tools.docs_tools import docs_list_sources, docs_fetch_docs
 from .tools.admin_tools import domains, stats, reset, clear_blacklist
@@ -257,6 +257,7 @@ mcp.add_tool(clear_blacklist)
 mcp.add_tool(proxy_status)
 mcp.add_tool(proxy_test)
 mcp.add_tool(proxy_rotate)
+mcp.add_tool(process_html)
 
 
 # ========== SERVER ENTRY POINT ==========

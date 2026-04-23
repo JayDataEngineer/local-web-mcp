@@ -52,6 +52,10 @@ class ProxyManager:
     def enabled(self) -> bool:
         return len(self._proxies) > 0
 
+    @property
+    def proxy_count(self) -> int:
+        return len(self._proxies)
+
     def get_proxy_url(self, target_url: str | None = None) -> str | None:
         """Return the next proxy URL, or None if disabled or target is excluded.
 

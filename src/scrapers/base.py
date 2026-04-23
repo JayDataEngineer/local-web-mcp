@@ -47,6 +47,26 @@ def _get_browser_proxy_url(target_url: str = None) -> str | None:
     return manager.get_proxy_url(target_url)
 
 
+def _is_ip_block(error: str) -> bool:
+    """Check if the error is likely an IP-based block (should rotate proxy)."""
+    ip_block_patterns = (
+        "403", "forbidden", "blocked", "captcha", "challenge",
+        "checkpoint", "access denied", "rate limit", "429",
+        "bot verification", "unavailable in your region",
+    )
+    error_lower = error.lower()
+    return any(p in error_lower for p in ip_block_patterns)
+
+
+def _rotate_proxy():
+    """Rotate to next proxy in the pool after an IP-based block."""
+    from ..utils.proxy import get_proxy_manager
+    manager = get_proxy_manager()
+    if manager.proxy_count > 1:
+        new_proxy = manager.rotate()
+        logger.info(f"Rotated proxy after IP block -> {new_proxy}")
+
+
 def is_security_checkpoint(title: str, content: str, url: str = None) -> bool:
     """Detect if the page is a security checkpoint/challenge page
 
@@ -718,6 +738,9 @@ async def scrape_with_fallback(
                 await db.record_success(domain, "selenium")
                 await record_metric(True, "selenium", content=result.get("content"))
                 return result
+            # Rotate proxy on IP-based blocks before retrying
+            if _is_ip_block(result.get("error", "")):
+                _rotate_proxy()
             logger.warning(f"Selenium attempt {attempt} failed for {url}")
         # All Selenium attempts failed - continue to try Crawl4AI
         logger.warning(f"All Selenium attempts failed for {domain}, trying Crawl4AI as fallback")
@@ -741,6 +764,11 @@ async def scrape_with_fallback(
 
         # Check for security checkpoint - immediate fallback if detected
         error_msg = result.get("error", "")
+
+        # Rotate proxy on IP-based blocks before retrying
+        if _is_ip_block(error_msg):
+            _rotate_proxy()
+
         if "Security checkpoint" in error_msg:
             logger.warning(f"Checkpoint detected on Crawl4AI attempt {attempt} - switching to Selenium immediately")
             checkpoint_detected = True
@@ -774,6 +802,9 @@ async def scrape_with_fallback(
                 await db.record_success(domain, "selenium")
                 await record_metric(True, "selenium", content=result.get("content"))
                 return result
+            # Rotate proxy on IP-based blocks before retrying
+            if _is_ip_block(result.get("error", "")):
+                _rotate_proxy()
             logger.warning(f"Selenium attempt {attempt} failed for {url}")
 
     # All attempts failed - record failure and metric

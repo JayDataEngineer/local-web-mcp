@@ -470,3 +470,53 @@ async def list_schemas(ctx: Context | None = None) -> dict:
         "total": len(schemas),
         "schemas": schemas,
     }
+
+
+async def process_html(
+    html: Annotated[str, Field(
+        description="Raw HTML content to clean and convert to markdown"
+    )],
+    url: Annotated[str, Field(
+        description="Source URL for context (used by cleaning heuristics)"
+    )] = "",
+    css_selector: Annotated[str | None, Field(
+        description="Optional CSS selector for targeted content extraction"
+    )] = None,
+    ctx: Context | None = None
+) -> dict:
+    """Process raw HTML content and convert to clean markdown.
+
+    For AI browser agents: send the page HTML from your browser and get back
+    clean, LLM-ready markdown. Uses the same cleaning pipeline as the scrape
+    tool (noise removal, content extraction, 50K char cap).
+
+    Args:
+        html: Raw HTML content from the page DOM
+        url: Source URL (helps the cleaner make better extraction decisions)
+        css_selector: Optional CSS selector for targeted extraction
+
+    Returns:
+        Dictionary with content (clean markdown), success, and content_length
+    """
+    if ctx:
+        await ctx.info(f"Processing HTML: {len(html)} chars from {url or 'unknown'}")
+
+    if not html or not html.strip():
+        raise ToolError("html parameter cannot be empty")
+
+    from ..scrapers.base import postprocess_markdown
+
+    scrape_svc = ctx.lifespan_context.get("scrape_service")
+    if not scrape_svc:
+        raise ToolError("Scrape service not available")
+
+    cleaner = scrape_svc.cleaner
+    clean_markdown = cleaner.clean(html, url=url, css_selector=css_selector)
+    clean_markdown = postprocess_markdown(clean_markdown)
+
+    return {
+        "success": bool(clean_markdown),
+        "content": clean_markdown,
+        "content_length": len(clean_markdown),
+        "url": url,
+    }
