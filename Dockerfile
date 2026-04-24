@@ -43,10 +43,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy dependency files
 COPY pyproject.toml ./
 
-# Create virtual environment and install dependencies (including dev for pytest)
+# Create virtual environment
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv venv /app/.venv && \
+    uv venv /app/.venv
+
+# Install dependencies from pyproject.toml
+RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync
+
+# Force-install PyTorch CPU-only AFTER uv sync.
+# uv sync pulls CUDA variants from PyPI; this replaces them with CPU-only (~190MB vs 2GB+).
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python /app/.venv/bin/python \
+    --force-reinstall \
+    torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # Install Playwright Chromium
 RUN .venv/bin/playwright install --with-deps chromium

@@ -71,6 +71,7 @@ services:
     volumes:
       - ./docs_config.yaml:/app/docs_config.yaml:ro
       - ./docs_local:/app/docs_local:ro
+      - hf-cache:/root/.cache/huggingface
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
@@ -86,6 +87,9 @@ services:
       - MCP_PROXY_URLS=${MCP_PROXY_URLS:-}
       - MCP_PROXY_ROTATION=${MCP_PROXY_ROTATION:-round-robin}
       - MCP_PROXY_EXCLUDE=${MCP_PROXY_EXCLUDE:-searxng,postgres,redis,localhost,127.0.0.1}
+      - MCP_VISION_ENABLED=${MCP_VISION_ENABLED:-true}
+      - MCP_VISION_MODEL=${MCP_VISION_MODEL:-microsoft/Florence-2-base}
+      - MCP_VISION_DEVICE=${MCP_VISION_DEVICE:-cpu}
     command: python -m src.mcp_sse
     depends_on:
       gluetun:
@@ -422,3 +426,4 @@ volumes:
   postgres-data:
   caddy_data:
   caddy_config:
+  hf-cache:

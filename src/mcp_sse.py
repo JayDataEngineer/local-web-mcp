@@ -8,6 +8,10 @@ Web Research Tools:
 - list_schemas: List available extraction schemas
 - map: Discover URLs from sitemaps/Common Crawl
 - crawl: Deep crawl with BFS or Best-First strategy
+- process_html: Convert raw HTML to clean markdown
+
+Vision Tools:
+- analyze_image: Analyze images using Florence-2 vision model (CPU)
 
 Admin Tools:
 - domains: List tracked domains with preferred methods
@@ -96,6 +100,7 @@ async def service_lifespan(server: FastMCP):
     from .services.scrape_service import get_scrape_service
     from .services.crawl_service import get_map_crawl_service
     from .services.content_cleaner import get_content_cleaner
+    from .services.vision_service import get_vision_service
     from .db.database import get_db
 
     logger.info("Initializing services...")
@@ -103,6 +108,7 @@ async def service_lifespan(server: FastMCP):
     scrape_service = get_scrape_service()
     crawl_service = get_map_crawl_service()
     cleaner = get_content_cleaner()
+    vision_service = get_vision_service()
     db = await get_db()
 
     try:
@@ -111,6 +117,7 @@ async def service_lifespan(server: FastMCP):
             "scrape_service": scrape_service,
             "crawl_service": crawl_service,
             "cleaner": cleaner,
+            "vision_service": vision_service,
             "db": db,
         }
     finally:
@@ -118,6 +125,7 @@ async def service_lifespan(server: FastMCP):
         await search_service.close()
         await scrape_service.close()
         await crawl_service.close()
+        await vision_service.close()
         await db.close()
         logger.info("Shutdown complete")
 
@@ -239,6 +247,7 @@ from .tools.crawl_tools import map, crawl
 from .tools.docs_tools import docs_list_sources, docs_fetch_docs
 from .tools.admin_tools import domains, stats, reset, clear_blacklist
 from .tools.proxy_tools import proxy_status, proxy_test, proxy_rotate
+from .tools.vision_tools import analyze_image
 
 # Register all tools with FastMCP
 mcp.add_tool(research)
@@ -258,6 +267,7 @@ mcp.add_tool(proxy_status)
 mcp.add_tool(proxy_test)
 mcp.add_tool(proxy_rotate)
 mcp.add_tool(process_html)
+mcp.add_tool(analyze_image)
 
 
 # ========== SERVER ENTRY POINT ==========
@@ -273,6 +283,7 @@ if __name__ == "__main__":
     logger.info(f"Session state: Redis @ {REDIS_HOST}:{REDIS_PORT}")
     logger.info(f"Caching: enabled (search: {SEARCH_CACHE_TTL}s, scrape: {SCRAPE_CACHE_TTL}s)")
     logger.info(f"Web tools: research, search, scrape, extract, list_schemas, map, crawl")
+    logger.info(f"Vision tools: analyze_image (Florence-2, lazy-loaded)")
     logger.info(f"Admin tools: domains, stats, reset, clear_blacklist")
     logger.info(f"Docs tools: docs_list_sources, docs_fetch_docs")
     logger.info(f"Proxy tools: proxy_status, proxy_test, proxy_rotate")

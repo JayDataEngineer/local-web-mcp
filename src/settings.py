@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     proxy_rotation: str = "round-robin"  # "round-robin" or "random"
     proxy_exclude: str = "searxng,postgres,redis,localhost,127.0.0.1"  # Hostnames to bypass
 
+    # Vision Model Configuration (Florence-2)
+    vision_enabled: bool = True
+    vision_model: str = "microsoft/Florence-2-base"
+    vision_device: str = "cpu"
+    vision_max_new_tokens: int = 1024
+    vision_download_timeout: int = 600  # 10 minutes for first download
+    vision_inference_timeout: float = 120.0  # 2 minutes per inference
+
 
 # Global settings instance
 _settings: Settings | None = None

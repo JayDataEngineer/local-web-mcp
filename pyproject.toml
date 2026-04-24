@@ -30,6 +30,10 @@ dependencies = [
     "selectolax>=0.3.0",
     "pydantic-settings>=2.0.0",
     "py-key-value-aio[redis]>=0.2.0",
+    "transformers==4.45.2",
+    "einops>=0.8.0",
+    "timm>=1.0.0",
+    "pillow>=10.0.0",
 ]
 
 [tool.uv]
