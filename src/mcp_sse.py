@@ -270,6 +270,11 @@ mcp.add_tool(process_html)
 mcp.add_tool(analyze_image)
 
 
+# ========== ASGI APP (for uvicorn --workers) ==========
+
+app = mcp.http_app(stateless_http=True)
+
+
 # ========== SERVER ENTRY POINT ==========
 
 if __name__ == "__main__":

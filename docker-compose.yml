@@ -90,7 +90,7 @@ services:
       - MCP_VISION_ENABLED=${MCP_VISION_ENABLED:-true}
       - MCP_VISION_MODEL=${MCP_VISION_MODEL:-microsoft/Florence-2-base}
       - MCP_VISION_DEVICE=${MCP_VISION_DEVICE:-cpu}
-    command: python -m src.mcp_sse
+    command: uvicorn src.mcp_sse:app --host 0.0.0.0 --port 8000 --workers 2
     depends_on:
       gluetun:
         condition: service_started

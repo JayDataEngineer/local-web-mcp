@@ -1,18 +1,22 @@
 """Unified scraping service with method routing and consistent output
 
 Flow:
-1. Rate limiting (max 3 concurrent per domain)
-2. Check blacklist -> reject if blacklisted
-3. Reddit -> special JSON API handler
-4. Check database -> use learned preference
-5. Try Crawl4AI (fast)
-6. Fallback to Selenium (stealth)
-7. Blacklist if both fail
+1. Check URL-level Redis cache -> return cached if hit
+2. Rate limiting (max 3 concurrent per domain)
+3. Check blacklist -> reject if blacklisted
+4. Reddit -> special JSON API handler
+5. Check database -> use learned preference
+6. Try Crawl4AI (fast)
+7. Fallback to Selenium (stealth)
+8. Blacklist if both fail
+9. Store successful scrape in Redis cache (24h TTL)
 
-Note: Caching is handled by FastMCP's ResponseCachingMiddleware at the framework level.
 Note: Rate limiting uses in-memory semaphores (no Redis required).
 Note: Domain tracking uses PostgreSQL (shared with Celery workers).
 """
+
+import hashlib
+import json
 
 from loguru import logger
 
@@ -22,11 +26,20 @@ from ..utils.rate_limiter import get_rate_limiter
 from ..scrapers.base import scrape_with_fallback
 from ..utils import extract_domain, create_singleton_factory
 
+# Cache successful scrapes for 24 hours
+SCRAPE_CACHE_TTL = 86400
+
+
+def _cache_key(url: str, text_only: bool) -> str:
+    """Generate Redis cache key from URL + options."""
+    h = hashlib.sha256(f"{url}:{text_only}".encode()).hexdigest()
+    return f"scrape_cache:{h}"
+
 
 class UnifiedScrapeService:
     """Unified scraping with consistent output format
 
-    Caching is handled by FastMCP's ResponseCachingMiddleware at the framework level.
+    URL-level Redis cache prevents repeated scrapes of the same URL.
     Rate limiting uses in-memory semaphores (no Redis required).
     Domain tracking uses PostgreSQL (shared with Celery workers).
     """
@@ -35,6 +48,7 @@ class UnifiedScrapeService:
         self._db = db
         self._cleaner = cleaner
         self._db_instance = None
+        self._redis = None
 
     async def _get_db(self):
         if self._db is not None:
@@ -44,6 +58,22 @@ class UnifiedScrapeService:
             self._db_instance = await get_db()
         return self._db_instance
 
+    async def _get_redis(self):
+        if self._redis is None:
+            try:
+                import redis.asyncio as aioredis
+                from ..settings import get_settings
+                s = get_settings()
+                self._redis = aioredis.Redis(
+                    host=s.redis_host,
+                    port=s.redis_port,
+                    password=s.redis_password or None,
+                    decode_responses=True,
+                )
+            except Exception as e:
+                logger.warning(f"Redis unavailable for scrape cache: {e}")
+        return self._redis
+
     @property
     def cleaner(self):
         if self._cleaner is None:
@@ -51,12 +81,24 @@ class UnifiedScrapeService:
         return self._cleaner
 
     async def scrape(self, request: ScrapeRequest) -> ScrapeResponse:
-        """Main scrape entry point with routing and rate limiting"""
+        """Main scrape entry point with URL-level cache and rate limiting"""
+        cache_k = _cache_key(request.url, request.text_only)
+
+        # Check URL cache first
+        redis = await self._get_redis()
+        if redis:
+            try:
+                cached = await redis.get(cache_k)
+                if cached:
+                    logger.debug(f"Scrape cache HIT: {request.url}")
+                    return self._dict_to_response(json.loads(cached))
+            except Exception:
+                pass
+
         db = await self._get_db()
         domain = extract_domain(request.url)
         rate_limiter = get_rate_limiter()
 
-        # Try with rate limiting
         acquired = await rate_limiter.acquire(domain)
         if not acquired:
             return ScrapeResponse(
@@ -77,7 +119,17 @@ class UnifiedScrapeService:
                 text_only=request.text_only
             )
 
-            return self._dict_to_response(result_dict)
+            response = self._dict_to_response(result_dict)
+
+            # Cache successful scrapes
+            if response.success and response.content and redis:
+                try:
+                    await redis.setex(cache_k, SCRAPE_CACHE_TTL, json.dumps(result_dict))
+                    logger.debug(f"Scrape cached (24h): {request.url}")
+                except Exception:
+                    pass
+
+            return response
 
         except Exception as e:
             # Catch any unexpected exceptions to prevent TaskGroup errors

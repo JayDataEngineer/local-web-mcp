@@ -115,6 +115,9 @@ async def research(
     depth: Annotated[Literal["quick", "deep"], Field(
         description="quick=1 search page (~10 results), deep=2 pages (~20 results)"
     )] = "quick",
+    rerank: Annotated[bool, Field(
+        description="Apply flash re-ranking to prioritize relevant results. Set false to get raw search engine ordering."
+    )] = True,
     ctx: Context | None = None
 ) -> dict:
     """Search the web and scrape the top results in one call.
@@ -150,7 +153,7 @@ async def research(
         pages=pages,
         exclude_blacklist=True,
         top_k=max_results,
-        rerank=True,
+        rerank=rerank,
     )
 
     if not search_result.results:
