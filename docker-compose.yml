@@ -64,6 +64,7 @@ services:
   mcp-server:
     build: .
     container_name: mcp-server
+    init: true
     ports:
       - "8327:8000"  # Expose to all interfaces for tailnet access
     networks:
@@ -117,6 +118,7 @@ services:
   celery-worker:
     build: .
     container_name: mcp-celery-worker
+    init: true
     networks:
       - mcp_net
     environment:
