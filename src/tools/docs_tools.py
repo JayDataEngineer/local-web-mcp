@@ -23,6 +23,11 @@ DOCS_CONFIG_PATH = _settings.docs_config_path
 DOCS_LOCAL_DIR = _settings.docs_local_dir
 
 
+# Compiled patterns
+# Extract markdown links: [text](url) or [text](url "title")
+LINK_PATTERN = re.compile(r'\[([^\]]+)\]\(([^)]+)\)')
+
+
 # Session-level storage for dynamically discovered domains
 _session_allowed_domains: set[str] = set()
 
@@ -52,12 +57,10 @@ async def _add_domains_from_content(content: str, base_url: str, ctx: Context | 
     """Extract domains from markdown links and add to session allowlist."""
     global _session_allowed_domains
 
-    # Extract markdown links: [text](url) or [text](url "title")
-    link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'
     base_parsed = urlparse(base_url)
     base_domain = base_parsed.netloc.replace("www.", "")
 
-    for match in re.finditer(link_pattern, content):
+    for match in LINK_PATTERN.finditer(content):
         url = match.group(2).split()[0]  # Remove trailing "title" if present
         try:
             parsed = urlparse(url)
